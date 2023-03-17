@@ -1,9 +1,9 @@
-data_dir: '/data/pathology/projects/ais-cap/code/git/clemsgrs/hipt/data/panda_radboud/dino/patch_256_pretraining'
-output_dir: '/data/pathology/projects/ais-cap/code/git/clemsgrs/hipt/output/panda_radboud/dino'
-experiment_name: 'patch'
+data_dir: '/data/pathology/projects/pathology-self-supervision/WSI_patches/data_estimation/breast/neoadjuvant_radboudumc/patches/256/jpeg/PA_S01_P000078_C0001_V01/'
+output_dir: '/data/pathology/users/sofia/github/hipt_/ckpts/'
+experiment_name: 'patch_4gpu_20_wandb'
 
 start_from_checkpoint:
-resume: True
+resume: False
 resume_from_checkpoint: 'latest.pth'
 seed: 0
 
@@ -21,10 +21,10 @@ model:
 
 # training/optimization parameters
 training:
-  nepochs: 100
-  warmup_epochs: 10 # number of epochs for the linear learning-rate warm up.
+  nepochs: 10
+  warmup_epochs: 1 # number of epochs for the linear learning-rate warm up.
   freeze_last_layer: 1 # number of epochs during which we keep the output layer fixed ; typically doing so during the first epoch helps training ; try increasing this value if the loss does not decrease
-  batch_size_per_gpu: 128
+  batch_size_per_gpu: 20
   clip_grad: 3.0 # maximal parameter gradient norm if using gradient clipping ; clipping with norm .3 ~ 1.0 can help optimization for larger ViT architectures. 0 for disabling
   pct:
 
@@ -51,17 +51,17 @@ aug:
 
 speed:
   use_fp16: True # whether or not to use half precision for training ; improves training time and memory requirements, but can provoke instability and slight decay of performance ; we recommend disabling mixed precision if the loss is unstable, if reducing the patch size or if training with bigger ViTs
-  num_workers: 4
+  num_workers: 10
 
 logging:
-  save_snapshot_every: 10 # save checkpoint every x epochs
+  save_snapshot_every: 5 # save checkpoint every x epochs
 
 wandb:
   enable: True
-  project: 'hipt'
-  username: 'clemsg'
+  project: 'HIPT_trials'
+  username: 'sofialeoncontreras'
   exp_name: '${experiment_name}'
-  dir: '/home/user'
+  dir: '/data/pathology/projects/pathology-self-supervision/'
   group:
   to_log: ['loss']
 
