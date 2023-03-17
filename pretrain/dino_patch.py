@@ -285,23 +285,19 @@ def main(cfg: DictConfig):
                 wandb.log({"lr": lr})
                 wandb.log({"loss": loss})
 
-
             # save snapshot
             if is_main_process():
                 snapshot = {
                     "epoch": epoch,
                     "optimizer": optimizer.state_dict(),
                     "dino_loss": dino_loss.state_dict(),
+                    "student": student.state_dict(),
+                    "teacher": teacher.state_dict(),
                 }
-                if distributed:
-                    snapshot["student"] = student.module.state_dict()
-                    snapshot["teacher"] = teacher.module.state_dict()
-                else:
-                    snapshot["student"] = student.state_dict()
-                    snapshot["teacher"] = teacher.state_dict()
                 if fp16_scaler is not None:
                     snapshot["fp16_scaler"] = fp16_scaler.state_dict()
                 torch.save(snapshot, snapshot_path)
+                
                 if (
                     cfg.logging.save_snapshot_every
                     and epoch % cfg.logging.save_snapshot_every == 0
@@ -320,9 +316,10 @@ def main(cfg: DictConfig):
 
             epoch_end_time = time.time()
             epoch_mins, epoch_secs = compute_time(epoch_start_time, epoch_end_time)
-            tqdm.tqdm.write(
-                f"End of epoch {epoch+1}/{cfg.training.nepochs} \t Time Taken:  {epoch_mins}m {epoch_secs}s"
-            )
+            if is_main_process():
+                tqdm.tqdm.write(
+                    f"End of epoch {epoch+1}/{cfg.training.nepochs} \t Time Taken:  {epoch_mins}m {epoch_secs}s \t LR: {lr:.6f} \t Loss: {loss:.6f}",
+                )
 
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
@@ -335,7 +332,7 @@ def main(cfg: DictConfig):
 if __name__ == "__main__":
 
     # python3 -m torch.distributed.run pretrain/dino_patch.py --config-name 'patch'
-    # python3 -m torch.distributed.run --standalone --nproc_per_node=gpu pretrain/dino_patch.py --config-name 'debug'
+    # python3 -m torch.distributed.run --nproc_per_node=gpu pretrain/dino_patch.py --config-name 'patch'
 
     # ISSUE WITH TORCHRUN ON SOL2: USES PYTHON3.8 INSTEAD OF PYTHON3.9 FOR SOME REASON
     # torchrun --standalone pretrain/dino_patch.py --nproc_per_node=gpu --config-name 'debug'
