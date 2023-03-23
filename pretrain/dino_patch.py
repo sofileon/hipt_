@@ -99,6 +99,7 @@ def main(cfg: DictConfig):
     )
     if is_main_process():
         print(f"Data loaded: there are {len(dataset)} patches.")
+        print(f'Batch size per gpu is {cfg.training.batch_size_per_gpu}')
 
     # building student and teacher networks
     if is_main_process():
@@ -324,6 +325,14 @@ def main(cfg: DictConfig):
     total_time = time.time() - start_time
     total_time_str = str(datetime.timedelta(seconds=int(total_time)))
     print("Training time {}".format(total_time_str))
+    # saving the final model to onnx
+    if is_main_process():
+        print('Saving the final model to onnx')
+        if distributed:
+            torch.onnx.export(teacher, torch.randn(2, 3, 224, 224,device=f"cuda:{gpu_id}"), "teacher_final_epoch.onnx")
+        else:
+            torch.onnx.export(teacher, torch.randn(2, 3, 224, 224,device="cuda"), "teacher_final_epoch.onnx")
+        wandb.save("teacher_final_epoch.onnx")
 
     if distributed:
         torch.distributed.destroy_process_group()
