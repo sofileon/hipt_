@@ -208,7 +208,7 @@ def main(cfg: DictConfig):
         print(f"Models built, kicking off training")
 
     epochs_run = 0
-
+    
     # leverage torch native fault tolerance
     snapshot_path = Path(output_dir, "latest.pt")
     if distributed:
@@ -235,6 +235,18 @@ def main(cfg: DictConfig):
             dino_loss=dino_loss,
         )
         print(f"Resuming training from checkpoint at Epoch {epochs_run}")
+    elif cfg.finetune:
+        ckpt_path = Path(cfg.finetune_from_checkpoint)
+        epochs_ = resume_from_checkpoint(
+            ckpt_path,
+            student=student,
+            teacher=teacher,
+            optimizer=optimizer,
+            fp16_scaler=fp16_scaler,
+            dino_loss=dino_loss,
+        )
+        epochs_run = 0
+        print(f"Finetuning for {cfg.training.nepochs} epochs from checkpoint that already ruh {epochs_} epochs")
 
     start_time = time.time()
 

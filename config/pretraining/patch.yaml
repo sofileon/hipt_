@@ -6,6 +6,8 @@ start_from_checkpoint:
 resume: False
 resume_from_checkpoint: 'latest.pth'
 seed: 0
+finetune: False
+finetune_from_checkpoint: any/path/to/any/checkpoint.pth
 
 model:
   arch: 'vit_small'
