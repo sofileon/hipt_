@@ -1,13 +1,13 @@
 data_dir: '/data/pathology/projects/pathology-self-supervision/WSI_patches/data_estimation/breast/neoadjuvant_radboudumc/patches/256/jpeg/PA_S01_P000078_C0001_V01/'
 output_dir: '/data/pathology/users/sofia/github/hipt_/ckpts/'
-experiment_name: 'patch_4gpu_20_wandb'
+experiment_name: 'patch_2gpu_20_finetuning'
 
 start_from_checkpoint:
 resume: False
 resume_from_checkpoint: 'latest.pth'
 seed: 0
-finetune: False
-finetune_from_checkpoint: any/path/to/any/checkpoint.pth
+finetune: True
+finetune_from_checkpoint: 'data/pathology/projects/pathology-self-supervision/checkpoint_hipt/vit256_small_dino.pth'
 
 model:
   arch: 'vit_small'

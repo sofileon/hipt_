@@ -224,6 +224,19 @@ def main(cfg: DictConfig):
             if fp16_scaler is not None:
                 fp16_scaler.load_state_dict(snapshot["fp16_scaler"])
             print(f"Resuming training from snapshot at Epoch {epochs_run}")
+        elif cfg.finetune:
+            ckpt_path = Path(cfg.finetune_from_checkpoint)
+            print('Loading checkpoint for finetuning')
+            loc = f"cuda:{gpu_id}"
+            snapshot = torch.load(ckpt_path, map_location=loc)
+            epochs_ = snapshot["epoch"]
+            student.load_state_dict(snapshot["student"])
+            teacher.load_state_dict(snapshot["teacher"])
+            optimizer.load_state_dict(snapshot["optimizer"])
+            dino_loss.load_state_dict(snapshot["dino_loss"])
+            if fp16_scaler is not None:
+                fp16_scaler.load_state_dict(snapshot["fp16_scaler"])
+            print(f"Finetuning for {cfg.training.nepochs} epochs from checkpoint that already ran {epochs_} epochs")
     elif cfg.resume:
         ckpt_path = Path(output_dir, cfg.resume_from_checkpoint)
         epochs_run = resume_from_checkpoint(
@@ -235,7 +248,7 @@ def main(cfg: DictConfig):
             dino_loss=dino_loss,
         )
         print(f"Resuming training from checkpoint at Epoch {epochs_run}")
-    elif cfg.finetune:
+    if cfg.finetune:
         ckpt_path = Path(cfg.finetune_from_checkpoint)
         epochs_ = resume_from_checkpoint(
             ckpt_path,
@@ -246,7 +259,7 @@ def main(cfg: DictConfig):
             dino_loss=dino_loss,
         )
         epochs_run = 0
-        print(f"Finetuning for {cfg.training.nepochs} epochs from checkpoint that already ruh {epochs_} epochs")
+        print(f"Finetuning for {cfg.training.nepochs} epochs from checkpoint that already ran {epochs_} epochs")
 
     start_time = time.time()
 
