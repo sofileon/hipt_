@@ -1,13 +1,13 @@
 data_dir: '/data/pathology/projects/pathology-self-supervision/WSI_patches/data_estimation/breast/neoadjuvant_radboudumc/patches/256/jpeg/PA_S01_P000078_C0001_V01/'
 output_dir: '/data/pathology/users/sofia/github/hipt_/ckpts/'
-experiment_name: 'patch_2gpu_20_finetuning'
+experiment_name: 'patch_2gpu_32_finetuning'
 
 start_from_checkpoint:
 resume: False
 resume_from_checkpoint: 'latest.pth'
 seed: 0
 finetune: True
-finetune_from_checkpoint: 'data/pathology/projects/pathology-self-supervision/checkpoint_hipt/vit256_small_dino.pth'
+finetune_from_checkpoint: '/data/pathology/projects/pathology-self-supervision/checkpoint_hipt/vit256_small_dino.pth'
 
 model:
   arch: 'vit_small'
@@ -26,7 +26,7 @@ training:
   nepochs: 10
   warmup_epochs: 1 # number of epochs for the linear learning-rate warm up.
   freeze_last_layer: 1 # number of epochs during which we keep the output layer fixed ; typically doing so during the first epoch helps training ; try increasing this value if the loss does not decrease
-  batch_size_per_gpu: 20
+  batch_size_per_gpu: 32
   clip_grad: 3.0 # maximal parameter gradient norm if using gradient clipping ; clipping with norm .3 ~ 1.0 can help optimization for larger ViT architectures. 0 for disabling
   pct:
 

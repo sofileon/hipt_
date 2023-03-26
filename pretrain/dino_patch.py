@@ -232,7 +232,6 @@ def main(cfg: DictConfig):
             epochs_ = snapshot["epoch"]
             student.load_state_dict(snapshot["student"])
             teacher.load_state_dict(snapshot["teacher"])
-            optimizer.load_state_dict(snapshot["optimizer"])
             dino_loss.load_state_dict(snapshot["dino_loss"])
             if fp16_scaler is not None:
                 fp16_scaler.load_state_dict(snapshot["fp16_scaler"])
@@ -248,13 +247,11 @@ def main(cfg: DictConfig):
             dino_loss=dino_loss,
         )
         print(f"Resuming training from checkpoint at Epoch {epochs_run}")
-    if cfg.finetune:
+    elif cfg.finetune:
         ckpt_path = Path(cfg.finetune_from_checkpoint)
         epochs_ = resume_from_checkpoint(
             ckpt_path,
             student=student,
-            teacher=teacher,
-            optimizer=optimizer,
             fp16_scaler=fp16_scaler,
             dino_loss=dino_loss,
         )
