@@ -1,4 +1,4 @@
-data_dir: '/data/pathology/projects/pathology-self-supervision/WSI_patches/data_estimation/breast/neoadjuvant_radboudumc/patches/256/jpeg/PA_S01_P000078_C0001_V01/'
+data_dir: '/data/pathology/projects/pathology-self-supervision/WSI_patches/data_estimation/breast/neoadjuvant_radboudumc/patches/256/jpeg/'
 output_dir: '/data/pathology/users/sofia/github/hipt_/ckpts/'
 experiment_name: 'patch_2gpu_32_finetuning'
 
@@ -53,7 +53,7 @@ aug:
 
 speed:
   use_fp16: True # whether or not to use half precision for training ; improves training time and memory requirements, but can provoke instability and slight decay of performance ; we recommend disabling mixed precision if the loss is unstable, if reducing the patch size or if training with bigger ViTs
-  num_workers: 10
+  num_workers: 4
 
 logging:
   save_snapshot_every: 5 # save checkpoint every x epochs
