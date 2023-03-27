@@ -5,7 +5,7 @@ output/*
 notebooks/*
 checkpoints/*.pth
 config/pretraining/*.yaml
-
+*.sh
 # un-related python scripts
 convert_svs_slides_to_tif.py
 
