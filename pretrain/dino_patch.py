@@ -31,6 +31,7 @@ from utils import (
     cosine_scheduler,
     get_world_size,
     is_main_process,
+    h5fileDataset
 )
 
 
@@ -78,7 +79,7 @@ def main(cfg: DictConfig):
         cfg.aug.local_crops_number,
     )
 
-    dataset = datasets.ImageFolder(cfg.data_dir, transform=transform)
+    dataset = h5fileDataset(cfg.data_dir, transform=transform)
     if cfg.training.pct:
         print(f"Pre-training on {cfg.training.pct*100}% of the data")
         nsample = int(cfg.training.pct * len(dataset))

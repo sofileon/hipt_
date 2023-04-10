@@ -1,3 +1,4 @@
+import h5py
 import os
 import sys
 import math
@@ -11,7 +12,7 @@ import numpy as np
 import torch.distributed as dist
 
 from pathlib import Path
-from torchvision import transforms
+from torchvision import transforms,datasets
 from collections import defaultdict, deque
 from PIL import Image, ImageFilter, ImageOps
 
@@ -724,3 +725,23 @@ def train_one_epoch(
     # print("Averaged stats:", metric_logger)
     train_stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     return train_stats
+
+class h5fileDataset(datasets.DatasetFolder):
+    def __init__(self, root, transform=None, target_transform=None):
+        super().__init__(root, loader=lambda x: h5py.File(x, 'r')['imgs'], extensions='.h5')
+        self.patches_per_file=len(self.loader(self.samples[0][0]))
+        self.transform = transform
+        self.target_transform = target_transform
+    def __len__(self) -> int:
+        return len(self.samples)*self.patches_per_file
+    def __getitem__(self, index: int):
+        file_index=index//self.patches_per_file
+        patch_index=index%self.patches_per_file
+        path, target = self.samples[file_index]
+        sample = self.loader(path)
+        sample=sample[patch_index]
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        return sample, target    
