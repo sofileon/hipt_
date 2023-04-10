@@ -1,0 +1,8 @@
+hdf5_files_csv: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/non_cancer_lgd_region_4096.csv'
+wsi_files_dir: '/data/pathology/archives/gastrointestinal/examode_biopsies_radboudumc_colon/packed_blocks_sp05/packed'
+output_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/region_4096_h5/'
+processed_wsi_csv: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/processed_wsi2region_h5.csv'
+tissue: 'colon'
+
+region_2_patches:
+  patch_size: 256
