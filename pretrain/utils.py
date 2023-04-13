@@ -740,6 +740,7 @@ class h5fileDataset(datasets.DatasetFolder):
         path, target = self.samples[file_index]
         sample = self.loader(path)
         sample=sample[patch_index]
+        sample = Image.fromarray(sample)
         if self.transform is not None:
             sample = self.transform(sample)
         if self.target_transform is not None:
