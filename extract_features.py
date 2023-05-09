@@ -1,17 +1,19 @@
 import os
+import h5py
 import tqdm
 import wandb
 import torch
 import hydra
 import shutil
 import datetime
+import patchify
 import pandas as pd
 from PIL import Image
 from pathlib import Path
 from omegaconf import DictConfig
 from torchvision import transforms
 
-from source.dataset import RegionFilepathsDataset
+from source.dataset import RegionFilepathsDataset, RegionFilepathsDatasetv2
 from source.models import GlobalFeatureExtractor, LocalFeatureExtractor
 from source.utils import initialize_wandb, initialize_df, collate_region_filepaths
 
@@ -29,7 +31,7 @@ def main(cfg: DictConfig):
         wandb_run.define_metric("processed", summary="max")
         run_id = wandb_run.id
 
-    output_dir = Path(cfg.output_dir, cfg.experiment_name, run_id)
+    output_dir = Path(cfg.output_dir, cfg.experiment_name)#, run_id)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     features_dir = Path(output_dir, "features", cfg.level)
@@ -37,13 +39,13 @@ def main(cfg: DictConfig):
     region_features_dir = Path(features_dir, "region")
     if not cfg.resume:
         if features_dir.exists():
-            print(f"{features_dir} already exists! deleting it...")
-            shutil.rmtree(features_dir)
-            print("done")
-            features_dir.mkdir(parents=False)
-            slide_features_dir.mkdir()
+            print(f"{features_dir} already exists! New data will be added to it...")
+            # shutil.rmtree(features_dir)
+            # print("done")
+            # features_dir.mkdir(parents=False)
+            slide_features_dir.mkdir(exist_ok=True)
             if cfg.save_region_features:
-                region_features_dir.mkdir()
+                region_features_dir.mkdir(exist_ok=True)
         else:
             features_dir.mkdir(parents=True, exist_ok=True)
             slide_features_dir.mkdir(exist_ok=True)
@@ -68,7 +70,10 @@ def main(cfg: DictConfig):
         raise ValueError(f"cfg.level ({cfg.level}) not supported")
 
     region_dir = Path(cfg.region_dir)
-    slide_ids = sorted([s.name for s in region_dir.iterdir()])
+    if cfg.format=="h5":
+        slide_ids = sorted([s.name for sub in region_dir.iterdir() for s in sub.iterdir()])
+    else:
+        slide_ids = sorted([s.name for s in region_dir.iterdir()])
     print(f"{len(slide_ids)} slides with extracted patches found")
 
     if cfg.slide_list:
@@ -78,10 +83,10 @@ def main(cfg: DictConfig):
 
     process_list_fp = None
     if (
-        Path(features_dir.parent, f"process_list_{cfg.level}.csv").is_file()
+        Path(features_dir.parent, f"process_list_{cfg.level}_{cfg.type}.csv").is_file()
         and cfg.resume
     ):
-        process_list_fp = Path(output_dir, "features", f"process_list_{cfg.level}.csv")
+        process_list_fp = Path(output_dir, "features", f"process_list_{cfg.level}_{cfg.type}.csv")
 
     if process_list_fp is None:
         df = initialize_df(slide_ids)
@@ -93,7 +98,10 @@ def main(cfg: DictConfig):
     total = len(process_stack)
     already_processed = len(df) - total
 
-    region_dataset = RegionFilepathsDataset(df, region_dir, cfg.format)
+    if cfg.format=="h5":
+        region_dataset = RegionFilepathsDatasetv2(df, region_dir, cfg.format)
+    else:
+        region_dataset = RegionFilepathsDataset(df, region_dir, cfg.format)
     region_subset = torch.utils.data.Subset(
         region_dataset, indices=process_stack.index.tolist()
     )
@@ -136,7 +144,11 @@ def main(cfg: DictConfig):
                     for fp in t2:
 
                         x_y = Path(fp).stem
-                        img = Image.open(fp)
+                        if cfg.format=="h5":
+                            img = h5py.File(fp,'r')['imgs'][:].reshape(16,16,1,256,256,3)
+                            img= Image.fromarray(patchify.unpatchify(img, (cfg.region_size, cfg.region_size, 3)))
+                        else:
+                            img = Image.open(fp)
                         img = transforms.functional.to_tensor(img)  # [3, 4096, 4096]
                         img = img.unsqueeze(0)  # [1, 3, 4096, 4096]
                         img = img.to(device, non_blocking=True)
@@ -153,7 +165,7 @@ def main(cfg: DictConfig):
                 df.loc[idx, "process"] = 0
                 df.loc[idx, "status"] = "processed"
                 df.to_csv(
-                    Path(features_dir.parent, f"process_list_{cfg.level}.csv"),
+                    Path(features_dir.parent, f"process_list_{cfg.level}_{cfg.type}.csv"),
                     index=False,
                 )
 
