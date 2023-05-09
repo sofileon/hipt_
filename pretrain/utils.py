@@ -1,5 +1,6 @@
 import h5py
 import os
+import os.path
 import sys
 import math
 import tqdm
@@ -7,7 +8,9 @@ import time
 import torch
 import torch.nn as nn
 import random
+import wandb
 import datetime
+import warnings
 import numpy as np
 import torch.distributed as dist
 
@@ -15,6 +18,8 @@ from pathlib import Path
 from torchvision import transforms,datasets
 from collections import defaultdict, deque
 from PIL import Image, ImageFilter, ImageOps
+from typing import Any, Callable, cast, Dict, List, Optional, Tuple, Union
+
 
 from source.utils import update_state_dict
 
@@ -553,7 +558,7 @@ def cosine_scheduler(
     start_warmup_value=0,
 ):
     warmup_schedule = np.array([])
-    warmup_iters = warmup_epochs * niter_per_ep
+    warmup_iters = int(warmup_epochs * niter_per_ep)
     if warmup_epochs > 0:
         warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
 
@@ -642,6 +647,8 @@ def train_one_epoch(
     clip_grad,
     freeze_last_layer,
     gpu_id,
+    output_dir,
+    wandb_enabled,
 ):
     metric_logger = MetricLogger(delimiter="  ")
     with tqdm.tqdm(
@@ -655,6 +662,11 @@ def train_one_epoch(
         disable=not (gpu_id==0),
     ) as t:
         for it, (images, _) in enumerate(t):
+            # if is_main_process():
+            #     print(len(images)) # it is always a list of size 10
+            #     print(type(images)) 
+            #     print(images[4].shape) # first 2 [batchsize, 3, 224, 224], rest [batchsize, 3, 96, 96]
+            #     print(type(images[4]))
             # update weight decay and learning rate according to their schedule
             it = len(data_loader) * epoch + it  # global training iteration
             for i, param_group in enumerate(optimizer.param_groups):
@@ -720,6 +732,31 @@ def train_one_epoch(
             metric_logger.update(lr=optimizer.param_groups[0]["lr"])
             metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
 
+            # save the model every 10% of the dataloader
+            if it % (len(data_loader)//10) == 0 and it > 0 and is_main_process():
+                percentage_epoch= round((it-(len(data_loader) * epoch ))*100/len(data_loader))
+                if percentage_epoch == 100:
+                    continue
+                snapshot_epoch_path =  Path(output_dir, f"snapshot_epoch_{epoch:03}_{percentage_epoch}.pth")
+                snapshot = {
+                    "epoch": epoch,
+                    "optimizer": optimizer.state_dict(),
+                    "dino_loss": dino_loss.state_dict(),
+                    "student": student.state_dict(),
+                    "teacher": teacher.state_dict(),
+                }
+                if fp16_scaler is not None:
+                    snapshot["fp16_scaler"] = fp16_scaler.state_dict()
+                torch.save(snapshot, snapshot_epoch_path)
+
+            #log in wandb every 100 iterations
+            if it%100==0 and wandb_enabled and is_main_process():
+                wandb.log({"iteration": it})
+                wandb.define_metric("lr_it", step_metric="iteration")
+                wandb.define_metric("loss_it", step_metric="iteration")
+                wandb.log({"lr_it": optimizer.param_groups[0]["lr"]})
+                wandb.log({"loss_it": loss})
+
     # gather the stats from all processes
     metric_logger.synchronize_between_processes(gpu_id)
     # print("Averaged stats:", metric_logger)
@@ -728,21 +765,23 @@ def train_one_epoch(
 
 class h5fileDataset(datasets.DatasetFolder):
     def __init__(self, root, transform=None, target_transform=None):
-        super().__init__(root, loader=lambda x: h5py.File(x, 'r')['imgs'], extensions='.h5')
-        self.patches_per_file=len(self.loader(self.samples[0][0]))
+        super().__init__(root, loader=lambda x,y: Image.fromarray(h5py.File(x)['imgs'][y]), extensions='.h5')
+        self.patches_per_file=len(h5py.File(self.samples[0][0])['imgs'])
         self.transform = transform
         self.target_transform = target_transform
+
     def __len__(self) -> int:
         return len(self.samples)*self.patches_per_file
+    
     def __getitem__(self, index: int):
         file_index=index//self.patches_per_file
         patch_index=index%self.patches_per_file
         path, target = self.samples[file_index]
-        sample = self.loader(path)
-        sample=sample[patch_index]
-        sample = Image.fromarray(sample)
+        sample = self.loader(path,patch_index)
         if self.transform is not None:
             sample = self.transform(sample)
         if self.target_transform is not None:
             target = self.target_transform(target)
-        return sample, target    
+        return sample, target
+
+
