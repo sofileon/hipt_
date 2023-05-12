@@ -4,8 +4,9 @@ experiment_name: 'patch_2_h5_1'
 extension: 'h5'
 
 start_from_checkpoint:
-resume: False
-resume_from_checkpoint: 'latest.pth'
+resume: True
+resume_from_percentage: True
+resume_from_checkpoint: 'snapshot_epoch_000_20.pth'
 seed: 0
 finetune: False
 finetune_from_checkpoint: '/data/pathology/projects/pathology-self-supervision/checkpoint_hipt/vit256_small_dino.pth'

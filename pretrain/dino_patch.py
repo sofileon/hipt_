@@ -220,9 +220,10 @@ def main(cfg: DictConfig):
         print(f"Models built, kicking off training")
 
     epochs_run = 0
+    epoch_percentage = 0
     
     # leverage torch native fault tolerance
-    snapshot_path = Path(output_dir, "latest.pt")
+    snapshot_path = Path(output_dir, cfg.resume_from_checkpoint)
     if distributed:
         if snapshot_path.exists():
             print("Loading snapshot")
@@ -235,7 +236,12 @@ def main(cfg: DictConfig):
             dino_loss.load_state_dict(snapshot["dino_loss"])
             if fp16_scaler is not None:
                 fp16_scaler.load_state_dict(snapshot["fp16_scaler"])
-            print(f"Resuming training from snapshot at Epoch {epochs_run}")
+            #check if the percentage at the end of the snapshot name if you want to resume training from a certain percentage of the epoch
+            if cfg.resume_from_percentage and str(snapshot_path.name).split('.')[0].split('_')[-1].isdigit():
+                epoch_percentage = int(str(snapshot_path.name).split('.')[0].split('_')[-1])
+                print(f"Resume training from snapshot at {epoch_percentage}% of the epoch {epochs_run}")
+            else: 
+                print(f"Resuming training from snapshot at Epoch {epochs_run}")
         elif cfg.finetune:
             ckpt_path = Path(cfg.finetune_from_checkpoint)
             print('Loading checkpoint for finetuning')
@@ -259,7 +265,11 @@ def main(cfg: DictConfig):
             fp16_scaler=fp16_scaler,
             dino_loss=dino_loss,
         )
-        print(f"Resuming training from checkpoint at Epoch {epochs_run}")
+        if cfg.resume_from_percentage and str(snapshot_path.name).split('.')[0].split('_')[-1].isdigit():
+            epoch_percentage = int(str(snapshot_path.name).split('.')[0].split('_')[-1])
+            print(f"Resume training from checkpoint at {epoch_percentage}% of the epoch {epochs_run}")
+        else: 
+            print(f"Resuming training from checkpoint at Epoch {epochs_run}")
     elif cfg.finetune:
         ckpt_path = Path(cfg.finetune_from_checkpoint)
         epochs_ = resume_from_checkpoint(
@@ -313,6 +323,7 @@ def main(cfg: DictConfig):
                 gpu_id,
                 output_dir,
                 cfg.wandb.enable,
+                epoch_percentage,
             )
 
             lr = train_stats["lr"]
