@@ -13,10 +13,12 @@ import torch.distributed as dist
 from pathlib import Path
 from torchvision import transforms
 from collections import defaultdict, deque
-from PIL import Image, ImageFilter, ImageOps
+from PIL import ImageFilter, ImageOps
+from typing import Optional
 
+import source.vision_transformer as vits
 from source.utils import update_state_dict
-
+from eval_knn import extract_multiple_features, knn_classifier
 
 def hydra_argv_remapper(argv_map):
     """
@@ -253,7 +255,7 @@ class SmoothedValue(object):
         self.count += n
         self.total += value * n
 
-    def synchronize_between_processes(self, gpu_id):
+    def synchronize_between_processes(self, gpu_id, gpu_id):
         """
         Warning: does not synchronize the deque!
         """
@@ -329,7 +331,7 @@ class MetricLogger(object):
             loss_str.append("{}: {}".format(name, str(meter)))
         return self.delimiter.join(loss_str)
 
-    def synchronize_between_processes(self,gpu_id):
+    def synchronize_between_processes(self, gpu_id):
         for meter in self.meters.values():
             meter.synchronize_between_processes(gpu_id)
 
@@ -452,6 +454,73 @@ class MultiCropWrapper(nn.Module):
         return self.head(output)
 
 
+class EarlyStoppingDINO:
+    """
+    Leverage a downstream classification task to know if teacher still outperforms student
+    """
+
+    def __init__(
+        self,
+        tracking: str,
+        min_max: str,
+        patience: int = 20,
+        min_epoch: int = 50,
+        checkpoint_dir: Optional[Path] = None,
+        save_every: bool = False,
+        verbose: bool = False,
+    ):
+        """
+        Args:
+            patience (int): How long to wait after last time validation loss improved.
+            min_epoch (int): Earliest epoch possible for stopping
+            verbose (bool): If True, prints a message for each validation loss improvement
+        """
+        self.tracking = tracking
+        self.min_max = min_max
+        self.patience = patience
+        self.min_epoch = min_epoch
+        self.checkpoint_dir = checkpoint_dir
+        self.save_every = save_every
+        self.verbose = verbose
+
+        self.best_score = None
+        self.early_stop = False
+
+    def __call__(self, epoch, results, snapshot):
+
+        if results is not None:
+
+            teacher_score = results["teacher"][self.tracking]
+            student_score = results["student"][self.tracking]
+
+            if self.min_max == "min":
+                teacher_score = -1 * teacher_score
+                student_score = -1 * student_score
+
+            if self.best_score is None or (teacher_score >= self.best_score and teacher_score > student_score):
+                self.best_score = teacher_score
+                torch.save(snapshot, Path(self.checkpoint_dir, "best.pt"))
+                self.counter = 0
+
+            elif teacher_score < self.best_score or teacher_score <= student_score:
+                self.counter += 1
+                if epoch <= self.min_epoch + 1 and self.verbose:
+                    tqdm.tqdm.write(
+                        f"EarlyStopping counter: {min(self.counter,self.patience)}/{self.patience}"
+                    )
+                elif self.verbose:
+                    tqdm.tqdm.write(f"EarlyStopping counter: {self.counter}/{self.patience}")
+                if self.counter >= self.patience and epoch > self.min_epoch:
+                    self.early_stop = True
+
+        if self.save_every and epoch % self.save_every == 0:
+            fname = f"snapshot_epoch_{epoch:03}.pt"
+            torch.save(snapshot, Path(self.checkpoint_dir, fname))
+
+        # override latest
+        torch.save(snapshot, Path(self.checkpoint_dir, "latest.pt"))
+
+
 def get_params_groups(model):
     regularized = []
     not_regularized = []
@@ -528,13 +597,17 @@ def resume_from_checkpoint(ckpt_path, **kwargs):
     for key, value in kwargs.items():
         if key in checkpoint and value is not None:
             try:
-                msg = value.load_state_dict(checkpoint[key], strict=False)
+                sd = checkpoint[key]
+                nn.modules.utils.consume_prefix_in_state_dict_if_present(sd, "module.")
+                msg = value.load_state_dict(sd, strict=False)
                 print(
                     f"=> loaded '{key}' from checkpoint: '{ckpt_path}' with msg {msg}"
                 )
             except TypeError:
                 try:
-                    msg = value.load_state_dict(checkpoint[key])
+                    sd = checkpoint[key]
+                    nn.modules.utils.consume_prefix_in_state_dict_if_present(sd, "module.")
+                    msg = value.load_state_dict(sd)
                     print(f"=> loaded '{key}' from checkpoint: '{ckpt_path}'")
                 except ValueError:
                     print(f"=> failed to load '{key}' from checkpoint: '{ckpt_path}'")
@@ -724,3 +797,82 @@ def train_one_epoch(
     # print("Averaged stats:", metric_logger)
     train_stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     return train_stats
+
+
+def load_weights(model, state_dict):
+    # remove `module.` prefix induced by DDP
+    nn.modules.utils.consume_prefix_in_state_dict_if_present(state_dict, "module.")
+    # remove `backbone.` prefix induced by multicrop wrapper
+    nn.modules.utils.consume_prefix_in_state_dict_if_present(state_dict, "backbone.")
+    # state_dict, msg = update_state_dict(model.state_dict(), state_dict)
+    msg = model.load_state_dict(state_dict, strict=False)
+    if len(msg.missing_keys) > 0:
+        tqdm.tqdm.write(str(msg))
+    else:
+        tqdm.tqdm.write("All keys matched successfully")
+
+
+def tune_one_epoch(
+    epoch,
+    student: nn.Module,
+    teacher: nn.Module,
+    train_dataloader,
+    test_dataloader,
+    features_dir: Path,
+    arch: str,
+    patch_size: int,
+    drop_path_rate: float,
+    k: int,
+    temperature: float,
+    distributed: bool,
+    save_features: bool = False,
+    use_cuda: bool = False,
+):
+
+    student_model = vits.__dict__[arch](patch_size=patch_size, drop_path_rate=drop_path_rate, num_classes=0)
+    teacher_model = vits.__dict__[arch](patch_size=patch_size, num_classes=0)
+    tqdm.tqdm.write(f"Teacher & student models {arch} {patch_size}x{patch_size} built.")
+    student_model.cuda()
+    teacher_model.cuda()
+    tqdm.tqdm.write(f"Loading epoch {epoch} weights...")
+    student_weights = student.state_dict()
+    teacher_weights = teacher.state_dict()
+    load_weights(student_model, student_weights)
+    load_weights(teacher_model, teacher_weights)
+    student_model.eval()
+    teacher_model.eval()
+
+    # ============ extract student features ============
+    tqdm.tqdm.write("Extracting features for train set...")
+    train_features, train_labels = extract_multiple_features(student_model, teacher_model, train_dataloader, distributed, use_cuda)
+    tqdm.tqdm.write("Extracting features for test set...")
+    test_features, test_labels = extract_multiple_features(student_model, teacher_model, test_dataloader, distributed, use_cuda)
+
+    teacher_train_features, teacher_test_features = train_features["teacher"], test_features["teacher"]
+    student_train_features, student_test_features = train_features["student"], test_features["student"]
+
+    # save features and labels
+    if save_features and is_main_process():
+        for name, feats in train_features.items():
+            torch.save(feats.cpu(), Path(features_dir, f"{name}_train_feat.pth"))
+        for name, feats in train_features.items():
+            torch.save(feats.cpu(), Path(features_dir, f"{name}_test_feat.pth"))
+        torch.save(train_labels.cpu(), Path(features_dir, "train_labels.pth"))
+        torch.save(test_labels.cpu(), Path(features_dir, "test_labels.pth"))
+
+    results = defaultdict(dict)
+    if is_main_process():
+        assert len(torch.unique(train_labels)) == len(torch.unique(test_labels)), "train & test dataset have different number of classes!"
+        num_classes = len(torch.unique(train_labels))
+        if use_cuda:
+            teacher_train_features, teacher_test_features = teacher_train_features.cuda(), teacher_test_features.cuda()
+            student_train_features, student_test_features = student_train_features.cuda(), student_test_features.cuda()
+            train_labels, test_labels = train_labels.cuda(), test_labels.cuda()
+
+        tqdm.tqdm.write("Features are ready!\nStarting kNN classification.")
+        teacher_acc, teacher_auc = knn_classifier(teacher_train_features, train_labels, teacher_test_features, test_labels, k, temperature, num_classes)
+        student_acc, student_auc = knn_classifier(student_train_features, train_labels, student_test_features, test_labels, k, temperature, num_classes)
+        results["teacher"].update({'acc': teacher_acc, 'auc': teacher_auc})
+        results["student"].update({'acc': student_acc, 'auc': student_auc})
+
+    return results

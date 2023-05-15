@@ -30,6 +30,25 @@ training:
   clip_grad: 3.0 # maximal parameter gradient norm if using gradient clipping ; clipping with norm .3 ~ 1.0 can help optimization for larger ViT architectures. 0 for disabling
   pct:
 
+early_stopping:
+  tune_every: 5 # leave blank if you don't want to use early stopping mechanism
+  tracking: 'auc'
+  min_max: 'max'
+  patience: 10
+  min_epoch: 30
+  save_every: 10 # save checkpoint every x epochs
+  downstream:
+    train_csv: '/data/pathology/projects/ais-cap/dataset/witali-liver/hipt/dino/downstream_task/2-class/train.csv'
+    test_csv: '/data/pathology/projects/ais-cap/dataset/witali-liver/hipt/dino/downstream_task/2-class/test.csv'
+    label_name: 'label'
+    batch_size_per_gpu: 128
+    num_workers: 4
+  knn:
+    k: 20
+    temperature: 0.07
+    save_features: False
+    use_cuda: True
+
 optim:
   name: 'adamw' # type of optimizer ; we recommend using adamw with ViTs
   lr: 0.0005 # learning rate at the end of linear warmup (highest LR used during training) ; the learning rate is linearly scaled with the batch size, and specified here for a reference batch size of 256
@@ -55,9 +74,6 @@ speed:
   use_fp16: True # whether or not to use half precision for training ; improves training time and memory requirements, but can provoke instability and slight decay of performance ; we recommend disabling mixed precision if the loss is unstable, if reducing the patch size or if training with bigger ViTs
   num_workers: 4
 
-logging:
-  save_snapshot_every: 5 # save checkpoint every x epochs
-
 wandb:
   enable: True
   project: 'HIPT_trials'
@@ -66,13 +82,6 @@ wandb:
   dir: '/data/pathology/projects/pathology-self-supervision/'
   group:
   to_log: ['loss']
-
-# ignore these argument
-rank:
-gpu:
-world_size:
-dist_url: "env://" # url used to set up distributed training; see https://pytorch.org/docs/stable/distributed.html
-local_rank: 0
 
 # hydra
 hydra:
