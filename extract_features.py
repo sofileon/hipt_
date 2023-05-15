@@ -174,5 +174,5 @@ def main(cfg: DictConfig):
 
 
 if __name__ == "__main__":
-
+    # python3 extract_features.py --config-name default
     main()
