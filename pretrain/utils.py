@@ -1,4 +1,6 @@
+import h5py
 import os
+import os.path
 import sys
 import math
 import tqdm
@@ -6,14 +8,18 @@ import time
 import torch
 import torch.nn as nn
 import random
+import wandb
 import datetime
+import warnings
 import numpy as np
 import torch.distributed as dist
 
 from pathlib import Path
-from torchvision import transforms
+from torchvision import transforms,datasets
 from collections import defaultdict, deque
 from PIL import Image, ImageFilter, ImageOps
+from typing import Any, Callable, cast, Dict, List, Optional, Tuple, Union
+
 
 from source.utils import update_state_dict
 
@@ -552,7 +558,7 @@ def cosine_scheduler(
     start_warmup_value=0,
 ):
     warmup_schedule = np.array([])
-    warmup_iters = warmup_epochs * niter_per_ep
+    warmup_iters = int(warmup_epochs * niter_per_ep)
     if warmup_epochs > 0:
         warmup_schedule = np.linspace(start_warmup_value, base_value, warmup_iters)
 
@@ -641,21 +647,39 @@ def train_one_epoch(
     clip_grad,
     freeze_last_layer,
     gpu_id,
+    output_dir,
+    wandb_enabled,
+    epoch_percentage,
 ):
+    start_it=epoch_percentage*len(data_loader)//100  #batch number (relative to the epoch) to start from, (absolute it number is calculated in the for loop)
+    if start_it>0:
+        if is_main_process():
+            tqdm.tqdm.write(f'Start  at iteration {start_it}/{len(data_loader)*nepochs} of epoch {epoch}/{nepochs}')
+        index_list=list(data_loader.sampler)[start_it*data_loader.batch_size:]
+        data_loader=torch.utils.data.DataLoader(data_loader.dataset, 
+                                                sampler=index_list, 
+                                                batch_size=data_loader.batch_size,
+                                                pin_memory=True,
+                                                num_workers=data_loader.num_workers,
+                                                drop_last=True,) #now the dataloader starts from the batch number start_it so its length is len(original_data_loader)-start_it
     metric_logger = MetricLogger(delimiter="  ")
     with tqdm.tqdm(
         data_loader,
+        total=len(data_loader)+start_it,
         desc=(f"Epoch [{epoch+1}/{nepochs}]"),
         unit=" img",
+        initial=start_it,
         ncols=80,
         unit_scale=data_loader.batch_size,
         leave=False,
         file=sys.stdout,
         disable=not (gpu_id==0),
     ) as t:
-        for it, (images, _) in enumerate(t):
+        for it, (images, _) in enumerate(t, start=start_it):
             # update weight decay and learning rate according to their schedule
-            it = len(data_loader) * epoch + it  # global training iteration
+            it = (len(data_loader)+start_it) * epoch + it # global training iteration
+            # if it<start_it:
+            #     continue
             for i, param_group in enumerate(optimizer.param_groups):
                 param_group["lr"] = lr_schedule[it]
                 if i == 0:  # only the first group is regularized
@@ -677,7 +701,7 @@ def train_one_epoch(
 
             if not math.isfinite(loss.item()):
                 tqdm.tqdm.write(
-                    "Loss is {}, stopping training".format(loss.item()), force=True
+                    "Loss is {}, stopping training".format(loss.item())#, force=True
                 )
                 sys.exit(1)
 
@@ -719,8 +743,57 @@ def train_one_epoch(
             metric_logger.update(lr=optimizer.param_groups[0]["lr"])
             metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
 
+            # save the model every 10% of the dataloader
+            if it % ((len(data_loader)+start_it)//10) == 0 and it > 0 and is_main_process():
+                percentage_epoch= round((it-((len(data_loader)+start_it) * epoch ))*100/(len(data_loader)+start_it))
+                tqdm.tqdm.write(f'Saving {percentage_epoch}% checkpoint of current epoch')
+                if percentage_epoch == 100:
+                    continue
+                snapshot_epoch_path =  Path(output_dir, f"snapshot_epoch_{epoch:03}_{percentage_epoch}.pth")
+                snapshot = {
+                    "epoch": epoch,
+                    "optimizer": optimizer.state_dict(),
+                    "dino_loss": dino_loss.state_dict(),
+                    "student": student.state_dict(),
+                    "teacher": teacher.state_dict(),
+                }
+                if fp16_scaler is not None:
+                    snapshot["fp16_scaler"] = fp16_scaler.state_dict()
+                torch.save(snapshot, snapshot_epoch_path)
+
+            #log in wandb every 100 iterations
+            if it%100==0 and wandb_enabled and is_main_process():
+                wandb.log({"iteration": it})
+                wandb.define_metric("lr_it", step_metric="iteration")
+                wandb.define_metric("loss_it", step_metric="iteration")
+                wandb.log({"lr_it": optimizer.param_groups[0]["lr"]})
+                wandb.log({"loss_it": loss})
+
     # gather the stats from all processes
     metric_logger.synchronize_between_processes(gpu_id)
     # print("Averaged stats:", metric_logger)
     train_stats = {k: meter.global_avg for k, meter in metric_logger.meters.items()}
     return train_stats
+
+class h5fileDataset(datasets.DatasetFolder):
+    def __init__(self, root, transform=None, target_transform=None):
+        super().__init__(root, loader=lambda x,y: Image.fromarray(h5py.File(x)['imgs'][y]), extensions='.h5')
+        self.patches_per_file=len(h5py.File(self.samples[0][0])['imgs'])
+        self.transform = transform
+        self.target_transform = target_transform
+
+    def __len__(self) -> int:
+        return len(self.samples)*self.patches_per_file
+    
+    def __getitem__(self, index: int):
+        file_index=index//self.patches_per_file
+        patch_index=index%self.patches_per_file
+        path, target = self.samples[file_index]
+        sample = self.loader(path,patch_index)
+        if self.transform is not None:
+            sample = self.transform(sample)
+        if self.target_transform is not None:
+            target = self.target_transform(target)
+        return sample, target
+
+
