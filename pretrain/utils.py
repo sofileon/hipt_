@@ -701,7 +701,7 @@ def train_one_epoch(
 
             if not math.isfinite(loss.item()):
                 tqdm.tqdm.write(
-                    "Loss is {}, stopping training".format(loss.item()), force=True
+                    "Loss is {}, stopping training".format(loss.item())#, force=True
                 )
                 sys.exit(1)
 
