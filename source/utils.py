@@ -8,6 +8,7 @@ import pandas as pd
 import torch.nn as nn
 import torch.optim as optim
 import torch.nn.functional as F
+import torch.distributed as dist
 import matplotlib.pyplot as plt
 
 from pathlib import Path
@@ -17,6 +18,39 @@ from typing import Optional, Callable, List
 from sklearn import metrics
 from sklearn.model_selection import train_test_split
 from sksurv.metrics import concordance_index_censored, cumulative_dynamic_auc
+
+
+def is_dist_avail_and_initialized():
+    if not dist.is_available():
+        return False
+    if not dist.is_initialized():
+        return False
+    return True
+
+
+def get_world_size():
+    if not is_dist_avail_and_initialized():
+        return 1
+    return dist.get_world_size()
+
+
+def get_rank():
+    if not is_dist_avail_and_initialized():
+        return 0
+    return dist.get_rank()
+
+
+def is_main_process():
+    return get_rank() == 0
+
+
+def fix_random_seeds(seed=31):
+    """
+    Fix random seeds.
+    """
+    torch.manual_seed(seed)
+    torch.cuda.manual_seed_all(seed)
+    np.random.seed(seed)
 
 
 def write_dictconfig(d, f, child: bool = False, ntab=0):
@@ -148,10 +182,13 @@ def compute_time(start_time, end_time):
     return elapsed_mins, elapsed_secs
 
 
-def get_binary_metrics(probs: np.array(float), preds: List[int], labels: List[int]):
+def get_binary_metrics(preds: List[int], labels: List[int], probs: Optional[np.array] = None):
     labels = np.asarray(labels)
     acc = metrics.accuracy_score(labels, preds)
-    auc = metrics.roc_auc_score(labels, probs)
+    if probs is not None:
+        auc = metrics.roc_auc_score(labels, probs)
+    else:
+        auc = -1.
     precision = metrics.precision_score(labels, preds, zero_division=0)
     recall = metrics.recall_score(labels, preds)
     metrics_dict = {
@@ -164,13 +201,16 @@ def get_binary_metrics(probs: np.array(float), preds: List[int], labels: List[in
 
 
 def get_metrics(
-    probs: np.array(float),
     preds: List[int],
     labels: List[int],
+    probs: Optional[np.array] = None,
     multi_class: str = "ovr",
 ):
     labels = np.asarray(labels)
-    auc = metrics.roc_auc_score(labels, probs, multi_class=multi_class)
+    if probs is not None:
+        auc = metrics.roc_auc_score(labels, probs, multi_class=multi_class)
+    else:
+        auc = -1.
     quadratic_weighted_kappa = metrics.cohen_kappa_score(
         labels, preds, weights="quadratic"
     )
@@ -186,6 +226,13 @@ def collate_features(batch, label_type: str = "int"):
         label = torch.FloatTensor([item[2] for item in batch])
     elif label_type == "int":
         label = torch.LongTensor([item[2] for item in batch])
+    return [idx, feature, label]
+
+
+def collate_ordinal_features(batch):
+    idx = torch.LongTensor([item[0] for item in batch])
+    feature = torch.cat([item[1] for item in batch], dim=0)
+    label = torch.FloatTensor(np.array([item[2] for item in batch]))
     return [idx, feature, label]
 
 
@@ -231,7 +278,8 @@ def collate_region_filepaths(batch):
     item = batch[0]
     idx = torch.LongTensor([item[0]])
     fp = item[1]
-    return [idx, fp]
+    sid = item[2]
+    return [idx, fp, sid]
 
 
 def get_roc_auc_curve(
@@ -282,10 +330,21 @@ def make_weights_for_balanced_classes(dataset):
     return torch.DoubleTensor(weight)
 
 
-def logit_to_ordinal_prediction(logits):
+def get_preds_from_ordinal_logits(logits):
     with torch.no_grad():
         pred = torch.sigmoid(logits)
-    return (pred > 0.5).cumprod(axis=1).sum(axis=1) - 1
+    return (pred > 0.5).cumprod(axis=1).sum(axis=1)
+
+
+def get_label_from_ordinal_label(label):
+    return (label > 0.5).cumprod(axis=1).sum(axis=1)
+
+
+def get_label_from_regression_logits(logits, num_classes):
+    pred = torch.max(torch.min(torch.round(logits), torch.Tensor([num_classes-1])), torch.Tensor([0]))
+    # prob = (pred == logits) * torch.Tensor([1.0]) + (pred < logits) * (1 -(logits) % 1) + (pred > logits) * (logits % 1)
+    # need to deal with border values, e.g. logits < -0.5 or logits > num_classes-0.5
+    return pred
 
 
 def aggregated_cindex(df: pd.DataFrame, label_name: str = "label", agg: str = "mean"):
@@ -304,6 +363,7 @@ def aggregated_cindex(df: pd.DataFrame, label_name: str = "label", agg: str = "m
         tied_tol=1e-08,
     )[0]
     return c_index
+
 
 def get_cumulative_dynamic_auc(
     train_df, test_df, risks, label_name, verbose: bool = False
@@ -505,11 +565,11 @@ def train(
 
     with tqdm.tqdm(
         loader,
-        desc=(f"Train - Epoch {epoch}"),
+        desc=(f"Epoch {epoch} - Train"),
         unit=" slide",
         ncols=80,
         unit_scale=batch_size,
-        leave=True,
+        leave=False,
     ) as t:
 
         for i, batch in enumerate(t):
@@ -545,11 +605,11 @@ def train(
         dataset.df.loc[idxs, f"prob_{class_idx}"] = p.tolist()
 
     if dataset.num_classes == 2:
-        metrics = get_binary_metrics(probs[:, 1], preds, labels)
+        metrics = get_binary_metrics(preds, labels, probs[:, 1])
         # roc_auc_curve = get_roc_auc_curve(probs[:, 1], labels)
         # results.update({"roc_auc_curve": roc_auc_curve})
     else:
-        metrics = get_metrics(probs, preds, labels)
+        metrics = get_metrics(preds, labels, probs)
 
     results.update(metrics)
 
@@ -589,11 +649,11 @@ def tune(
 
     with tqdm.tqdm(
         loader,
-        desc=(f"Tune - Epoch {epoch}"),
+        desc=(f"Epoch {epoch} - Tune"),
         unit=" slide",
         ncols=80,
         unit_scale=batch_size,
-        leave=True,
+        leave=False,
     ) as t:
 
         with torch.no_grad():
@@ -623,11 +683,11 @@ def tune(
         dataset.df.loc[idxs, f"prob_{class_idx}"] = p.tolist()
 
     if dataset.num_classes == 2:
-        metrics = get_binary_metrics(probs[:, 1], preds, labels)
+        metrics = get_binary_metrics(preds, labels, probs[:, 1])
         # roc_auc_curve = get_roc_auc_curve(probs[:, 1], labels)
         # results.update({"roc_auc_curve": roc_auc_curve})
     else:
-        metrics = get_metrics(probs, preds, labels)
+        metrics = get_metrics(preds, labels, probs)
 
     results.update(metrics)
 
@@ -695,12 +755,411 @@ def test(
         dataset.df.loc[idxs, f"prob_{class_idx}"] = p.tolist()
 
     if dataset.num_classes == 2:
-        metrics = get_binary_metrics(probs[:, 1], preds, labels)
+        metrics = get_binary_metrics(preds, labels, probs[:, 1])
         # roc_auc_curve = get_roc_auc_curve(probs[:, 1], labels)
         # results.update({"roc_auc_curve": roc_auc_curve})
     else:
-        metrics = get_metrics(probs, preds, labels)
+        metrics = get_metrics(preds, labels, probs)
 
+    results.update(metrics)
+
+    return results
+
+
+def train_regression(
+    epoch: int,
+    model: nn.Module,
+    dataset: torch.utils.data.Dataset,
+    optimizer: torch.optim.Optimizer,
+    criterion: Callable,
+    collate_fn: Callable = partial(collate_features, label_type="float"),
+    batch_size: Optional[int] = 1,
+    weighted_sampling: Optional[bool] = False,
+    gradient_accumulation: Optional[int] = None,
+):
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model.train()
+    epoch_loss = 0
+    preds, labels = [], []
+    idxs = []
+
+    sampler = torch.utils.data.RandomSampler(dataset)
+    if weighted_sampling:
+        weights = make_weights_for_balanced_classes(dataset)
+        sampler = torch.utils.data.WeightedRandomSampler(
+            weights,
+            len(weights),
+        )
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        collate_fn=collate_fn,
+    )
+
+    results = {}
+
+    with tqdm.tqdm(
+        loader,
+        desc=(f"Epoch {epoch} - Train"),
+        unit=" slide",
+        ncols=80,
+        unit_scale=batch_size,
+        leave=False,
+    ) as t:
+
+        for i, batch in enumerate(t):
+
+            optimizer.zero_grad()
+            idx, x, label = batch
+            x, label = x.to(device, non_blocking=True), label.to(
+                device, non_blocking=True
+            )
+            logits = model(x)
+            loss = criterion(logits, label.unsqueeze(1))
+
+            loss_value = loss.item()
+            epoch_loss += loss_value
+
+            if gradient_accumulation:
+                loss = loss / gradient_accumulation
+
+            loss.backward()
+            optimizer.step()
+
+            pred = get_label_from_regression_logits(logits.cpu(), dataset.num_classes)
+            preds.extend(pred[:, 0].clone().tolist())
+
+            labels.extend(label.clone().tolist())
+            idxs.extend(list(idx))
+
+    metrics = get_metrics(preds, labels)
+    results.update(metrics)
+
+    train_loss = epoch_loss / len(loader)
+    results["loss"] = train_loss
+
+    return results
+
+
+def tune_regression(
+    epoch: int,
+    model: nn.Module,
+    dataset: torch.utils.data.Dataset,
+    criterion: Callable,
+    collate_fn: Callable = partial(collate_features, label_type="float"),
+    batch_size: Optional[int] = 1,
+):
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model.eval()
+    epoch_loss = 0
+    preds, labels = [], []
+    idxs = []
+
+    sampler = torch.utils.data.SequentialSampler(dataset)
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        collate_fn=collate_fn,
+    )
+
+    results = {}
+
+    with tqdm.tqdm(
+        loader,
+        desc=(f"Epoch {epoch} - Tune"),
+        unit=" slide",
+        ncols=80,
+        unit_scale=batch_size,
+        leave=False,
+    ) as t:
+
+        with torch.no_grad():
+
+            for i, batch in enumerate(t):
+
+                idx, x, label = batch
+                x, label = x.to(device, non_blocking=True), label.to(
+                    device, non_blocking=True
+                )
+                logits = model(x)
+                loss = criterion(logits, label.unsqueeze(1))
+
+                pred = get_label_from_regression_logits(logits.cpu(), dataset.num_classes)
+                preds.extend(pred[:, 0].clone().tolist())
+
+                labels.extend(label.clone().tolist())
+                idxs.extend(list(idx))
+
+                epoch_loss += loss.item()
+
+    metrics = get_metrics(preds, labels)
+    results.update(metrics)
+
+    tune_loss = epoch_loss / len(loader)
+    results["loss"] = tune_loss
+
+    return results
+
+
+def test_regression(
+    model: nn.Module,
+    dataset: torch.utils.data.Dataset,
+    collate_fn: Callable = partial(collate_features, label_type="float"),
+    batch_size: Optional[int] = 1,
+):
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model.eval()
+    preds, labels = [], []
+    idxs = []
+
+    sampler = torch.utils.data.SequentialSampler(dataset)
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        collate_fn=collate_fn,
+    )
+
+    results = {}
+
+    with tqdm.tqdm(
+        loader,
+        desc=(f"Test"),
+        unit=" slide",
+        ncols=80,
+        unit_scale=batch_size,
+        leave=True,
+    ) as t:
+
+        with torch.no_grad():
+
+            for i, batch in enumerate(t):
+
+                idx, x, label = batch
+                x, label = x.to(device, non_blocking=True), label.to(
+                    device, non_blocking=True
+                )
+                logits = model(x)
+
+                pred = get_label_from_regression_logits(logits.cpu(), dataset.num_classes)
+                preds.extend(pred[:, 0].clone().tolist())
+
+                labels.extend(label.clone().tolist())
+                idxs.extend(list(idx))
+
+    metrics = get_metrics(preds, labels)
+    results.update(metrics)
+
+    return results
+
+
+def train_ordinal(
+    epoch: int,
+    model: nn.Module,
+    dataset: torch.utils.data.Dataset,
+    optimizer: torch.optim.Optimizer,
+    criterion: Callable,
+    collate_fn: Callable = collate_ordinal_features,
+    batch_size: Optional[int] = 1,
+    weighted_sampling: Optional[bool] = False,
+    gradient_accumulation: Optional[int] = None,
+):
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model.train()
+    epoch_loss = 0
+    preds, labels = [], []
+    idxs = []
+
+    sampler = torch.utils.data.RandomSampler(dataset)
+    if weighted_sampling:
+        weights = make_weights_for_balanced_classes(dataset)
+        sampler = torch.utils.data.WeightedRandomSampler(
+            weights,
+            len(weights),
+        )
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        collate_fn=collate_fn,
+    )
+
+    results = {}
+
+    with tqdm.tqdm(
+        loader,
+        desc=(f"Epoch {epoch} - Train"),
+        unit=" slide",
+        ncols=80,
+        unit_scale=batch_size,
+        leave=False,
+    ) as t:
+
+        for i, batch in enumerate(t):
+
+            optimizer.zero_grad()
+            idx, x, label = batch
+            x, label = x.to(device, non_blocking=True), label.to(
+                device, non_blocking=True
+            )
+            logits = model(x)
+            loss = criterion(logits, label)
+
+            loss_value = loss.item()
+            epoch_loss += loss_value
+
+            if gradient_accumulation:
+                loss = loss / gradient_accumulation
+
+            loss.backward()
+            optimizer.step()
+
+            pred = get_preds_from_ordinal_logits(logits)
+            preds.extend(pred.clone().tolist())
+
+            label = get_label_from_ordinal_label(label)
+            labels.extend(label.clone().tolist())
+            idxs.extend(list(idx))
+
+    metrics = get_metrics(preds, labels)
+    results.update(metrics)
+
+    train_loss = epoch_loss / len(loader)
+    results["loss"] = train_loss
+
+    return results
+
+
+def tune_ordinal(
+    epoch: int,
+    model: nn.Module,
+    dataset: torch.utils.data.Dataset,
+    criterion: Callable,
+    collate_fn: Callable = collate_ordinal_features,
+    batch_size: Optional[int] = 1,
+):
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model.eval()
+    epoch_loss = 0
+    preds, labels = [], []
+    idxs = []
+
+    sampler = torch.utils.data.SequentialSampler(dataset)
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        collate_fn=collate_fn,
+    )
+
+    results = {}
+
+    with tqdm.tqdm(
+        loader,
+        desc=(f"Epoch {epoch} - Tune"),
+        unit=" slide",
+        ncols=80,
+        unit_scale=batch_size,
+        leave=False,
+    ) as t:
+
+        with torch.no_grad():
+
+            for i, batch in enumerate(t):
+
+                idx, x, label = batch
+                x, label = x.to(device, non_blocking=True), label.to(
+                    device, non_blocking=True
+                )
+                logits = model(x)
+                loss = criterion(logits, label)
+
+                pred = get_preds_from_ordinal_logits(logits)
+                preds.extend(pred.clone().tolist())
+
+                label = get_label_from_ordinal_label(label)
+                labels.extend(label.clone().tolist())
+                idxs.extend(list(idx))
+
+                epoch_loss += loss.item()
+
+    metrics = get_metrics(preds, labels)
+    results.update(metrics)
+
+    tune_loss = epoch_loss / len(loader)
+    results["loss"] = tune_loss
+
+    return results
+
+
+def test_ordinal(
+    model: nn.Module,
+    dataset: torch.utils.data.Dataset,
+    collate_fn: Callable = collate_ordinal_features,
+    batch_size: Optional[int] = 1,
+):
+
+    device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
+    model.eval()
+    preds, labels = [], []
+    idxs = []
+
+    sampler = torch.utils.data.SequentialSampler(dataset)
+
+    loader = torch.utils.data.DataLoader(
+        dataset,
+        batch_size=batch_size,
+        sampler=sampler,
+        collate_fn=collate_fn,
+    )
+
+    results = {}
+
+    with tqdm.tqdm(
+        loader,
+        desc=(f"Test"),
+        unit=" slide",
+        ncols=80,
+        unit_scale=batch_size,
+        leave=True,
+    ) as t:
+
+        with torch.no_grad():
+
+            for i, batch in enumerate(t):
+
+                idx, x, label = batch
+                x, label = x.to(device, non_blocking=True), label.to(
+                    device, non_blocking=True
+                )
+                logits = model(x)
+
+                pred = get_preds_from_ordinal_logits(logits)
+                preds.extend(pred.clone().tolist())
+
+                label = get_label_from_ordinal_label(label)
+                labels.extend(label.clone().tolist())
+                idxs.extend(list(idx))
+
+    metrics = get_metrics(preds, labels)
     results.update(metrics)
 
     return results
@@ -714,6 +1173,7 @@ def train_survival(
     criterion: Callable,
     agg_method: Optional[str] = "concat",
     batch_size: Optional[int] = 1,
+    weighted_sampling: Optional[bool] = False,
     gradient_accumulation: Optional[int] = 1,
 ):
 
@@ -726,6 +1186,13 @@ def train_survival(
     idxs = []
 
     sampler = torch.utils.data.RandomSampler(dataset)
+    if weighted_sampling:
+        weights = make_weights_for_balanced_classes(dataset)
+        sampler = torch.utils.data.WeightedRandomSampler(
+            weights,
+            len(weights),
+        )
+
     if dataset.use_coords:
         collate_fn = partial(
             collate_survival_features_coords, label_type="int", agg_method=agg_method
@@ -746,11 +1213,11 @@ def train_survival(
 
     with tqdm.tqdm(
         loader,
-        desc=(f"Train - Epoch {epoch}"),
+        desc=(f"Epoch {epoch} - Train"),
         unit=" patient",
         ncols=80,
         unit_scale=batch_size,
-        leave=True,
+        leave=False,
     ) as t:
 
         for i, batch in enumerate(t):
@@ -863,11 +1330,11 @@ def tune_survival(
 
     with tqdm.tqdm(
         loader,
-        desc=(f"Tune - Epoch {epoch}"),
+        desc=(f"Epoch {epoch} - Tune"),
         unit=" patient",
         ncols=80,
         unit_scale=batch_size,
-        leave=True,
+        leave=False,
     ) as t:
 
         with torch.no_grad():

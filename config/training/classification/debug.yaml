@@ -1,32 +1,34 @@
 data:
-  fold_dir: '/home/user/dataset/tcga/brca/survival/5fold-cv/fold_0'
+  train_csv: '/home/user/code/git/clemsgrs/hs2p/data/toy/train.csv'
+  tune_csv: '/home/user/code/git/clemsgrs/hs2p/data/toy/train.csv'
+  test_csv: '/home/user/code/git/clemsgrs/hs2p/data/toy/train.csv'
 
-features_dir: 'output/tcga_brca_all_slides/features/global'
+features_dir:
 output_dir: 'output'
-experiment_name: 'tcga_brca_survival'
+experiment_name: 'debug'
 level: 'global'
 
-nepochs: 50
-label_name: 'survival_months'
+nepochs: 5
+num_classes: 2
+label_name: 'label'
 label_mapping:
-nbins: 4
+label_encoding:
 
-task: 'survival'
-loss:
+task: 'classification'
+loss: 'ce'
 
 training:
   batch_size: 1
   pct:
   weighted_sampling: False
-  gradient_accumulation: 32
+  gradient_accumulation: 1
 
 tuning:
   batch_size: 1
   tune_every: 1
 
 testing:
-  run_testing: True
-  retrieve_checkpoint: 'latest'
+  retrieve_checkpoint: 'best'
 
 model:
   pretrain_vit_patch: 'checkpoints/vit_256_small_dino.pth'
@@ -45,8 +47,6 @@ model:
     learned: False
     type: '1d'
     max_seq_len: 512
-    max_nslide: 30
-    tile_size: ${model.region_size}
 
 optim:
   name: 'adam'
@@ -66,13 +66,13 @@ early_stopping:
   save_all: False
 
 wandb:
-  enable: True
+  enable: False
   project: 'hipt'
   username: 'clemsg'
   exp_name: '${experiment_name}'
   dir: '/home/user'
+  to_log: ['loss', 'auc', 'kappa', 'roc_auc_curve']
   group:
-  to_log: ['loss', 'c-index']
 
 hydra:
   run:

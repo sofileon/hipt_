@@ -1,4 +1,3 @@
-import os 
 import tqdm
 import torch
 import random
@@ -7,11 +6,11 @@ import pandas as pd
 from PIL import Image
 from pathlib import Path
 from torchvision import transforms
-from typing import Callable, Dict, Optional
+from typing import Callable, Dict, Optional, Any
 from collections import defaultdict
 from omegaconf import DictConfig
 from dataclasses import dataclass, field
-
+from torchvision.datasets.folder import default_loader
 
 def read_image(image_fp: str) -> Image:
     return Image.open(image_fp)
@@ -112,7 +111,7 @@ def ppcess_survival_data(
 
 
 @dataclass
-class SubtypingDatasetOptions:
+class ClassificationDatasetOptions:
     df: pd.DataFrame
     features_dir: Path
     label_name: str
@@ -137,14 +136,21 @@ class DatasetFactory:
         agg_method: str = "concat",
     ):
 
-        if task == "subtyping":
-            self.dataset = ExtractedFeaturesDataset(
-                options.df,
-                options.features_dir,
-                options.label_name,
-                options.label_mapping,
-                options.label_encoding,
-            )
+        if task in["classification", "regression"]:
+            if options.label_encoding == "ordinal":
+                self.dataset = ExtractedFeaturesOrdinalDataset(
+                    options.df,
+                    options.features_dir,
+                    options.label_name,
+                    options.label_mapping,
+                )
+            else:
+                self.dataset = ExtractedFeaturesDataset(
+                    options.df,
+                    options.features_dir,
+                    options.label_name,
+                    options.label_mapping,
+                )
         elif task == "survival":
             if options.tiles_df is not None:
                 if agg_method == "concat":
@@ -200,12 +206,10 @@ class ExtractedFeaturesDataset(torch.utils.data.Dataset):
         features_dir: Path,
         label_name: str = "label",
         label_mapping: Dict[int, int] = {},
-        label_encoding: Optional[str] = None,
     ):
         self.features_dir = features_dir
         self.label_name = label_name
         self.label_mapping = label_mapping
-        self.label_encoding = label_encoding
 
         self.df = self.prepare_data(df)
 
@@ -244,15 +248,31 @@ class ExtractedFeaturesDataset(torch.utils.data.Dataset):
         slide_id = row.slide_id
         fp = Path(self.features_dir, f"{slide_id}.pt")
         features = torch.load(fp)
-
         label = row.label
-        if self.label_encoding == "ordinal":
-            label = [1] * (label + 1) + [0] * (self.num_classes - label - 1)
-
         return idx, features, label
 
     def __len__(self):
         return len(self.df)
+
+
+class ExtractedFeaturesOrdinalDataset(ExtractedFeaturesDataset):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        features_dir: Path,
+        label_name: str = "label",
+        label_mapping: Dict[int, int] = {},
+    ):
+        super().__init__(df, features_dir, label_name, label_mapping)
+
+    def __getitem__(self, idx: int):
+        row = self.df.loc[idx]
+        slide_id = row.slide_id
+        fp = Path(self.features_dir, f"{slide_id}.pt")
+        features = torch.load(fp)
+        label = np.zeros(self.num_classes-1).astype(np.float32)
+        label[:row.label] = 1.
+        return idx, features, label
 
 
 class ExtractedFeaturesSurvivalDataset(torch.utils.data.Dataset):
@@ -625,37 +645,11 @@ class RegionFilepathsDataset(torch.utils.data.Dataset):
         slide_id = row.slide_id
         slide_dir = Path(self.region_dir, slide_id, "imgs")
         regions = [str(fp) for fp in slide_dir.glob(f"*.{self.format}")]
-        return idx, regions
+        return idx, regions, slide_id
 
     def __len__(self):
         return len(self.df)
-    
-class RegionFilepathsDatasetv2(torch.utils.data.Dataset):
-    def __init__(
-        self,
-        df: pd.DataFrame,
-        region_dir: Path,
-        fmt: str,
-    ):
-        self.df = df
-        self.region_dir = region_dir
-        self.format = fmt
 
-    def __getitem__(self, idx: int):
-        row = self.df.loc[idx]
-        slide_id = row.slide_id
-        slide_dir = Path(self.get_slidedir(slide_id))
-        regions = [str(fp) for fp in slide_dir.glob(f"*.{self.format}")]
-        return idx, regions
-    
-    def get_slidedir(self, slide_id):
-        for class_dir in os.listdir(self.region_dir):
-            class_path = Path(self.region_dir, class_dir)
-            if slide_id in os.listdir(class_path):        # If it does, then construct the final path and print it
-                return Path(class_path, slide_id)
-
-    def __len__(self):
-        return len(self.df)
 
 class HierarchicalPretrainingDataset(torch.utils.data.Dataset):
     def __init__(
@@ -674,3 +668,31 @@ class HierarchicalPretrainingDataset(torch.utils.data.Dataset):
 
     def __len__(self):
         return len(self.features_list)
+
+
+class ImagePretrainingDataset(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        tiles_df: pd.DataFrame,
+        transform: Optional[Callable] = None,
+        loader: Callable[[str], Any] = default_loader,
+        label_name: Optional[str] = None,
+    ):
+        self.df = tiles_df
+        self.transform = transform
+        self.loader = loader
+        self.label_name = label_name
+
+    def __getitem__(self, idx: int):
+        row = self.df.loc[idx]
+        path = row.tile_path
+        tile = self.loader(path)
+        if self.transform is not None:
+            tile = self.transform(tile)
+        label = -1
+        if self.label_name is not None:
+            label = row[self.label_name]
+        return tile, label
+
+    def __len__(self):
+        return len(self.df)

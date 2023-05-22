@@ -1,0 +1,41 @@
+defaults:
+  - single
+  - _self_
+
+region_dir: '${data_dir}/tcga_brca/patches'
+
+dataset_name: 'toy'
+slide_list: '${data_dir}/tcga_brca/slide_list.txt'
+data_csv: '${data_dir}/tcga_brca/data.csv'
+
+fold_num: -1
+level: 'region'
+
+region_size: 4096
+region_fmt: 'jpg'
+M_max: 5
+
+nepochs: 50
+num_classes: 2
+
+model:
+  pretrain_vit_patch: 'checkpoints/vit_256_small_dino.pth'
+  freeze_vit_patch: True
+  freeze_vit_patch_pos_embed: True
+  mini_patch_size: 16
+  pretrain_vit_region: 'checkpoints/vit_4096_xs_dino.pth'
+  freeze_vit_region: True
+  freeze_vit_region_pos_embed: True
+  region_size: 4096
+  patch_size: 256
+  dropout: 0.25
+
+optim:
+  name: 'adam'
+  lr: 2e-4
+  wd: 1e-5
+
+wandb:
+  project: 'hipt'
+  exp_name: 'toy_training'
+  username: 'clemsg'
