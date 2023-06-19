@@ -11,6 +11,8 @@ torch
 torchvision
 lifelines
 scikit-learn
+umap-learn
+umap-learn[plot]
 scikit-survival
 tqdm
 seaborn==0.12.0
