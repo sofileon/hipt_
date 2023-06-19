@@ -1,3 +1,4 @@
+import os
 import tqdm
 import torch
 import random
@@ -646,6 +647,33 @@ class RegionFilepathsDataset(torch.utils.data.Dataset):
         slide_dir = Path(self.region_dir, slide_id, "imgs")
         regions = [str(fp) for fp in slide_dir.glob(f"*.{self.format}")]
         return idx, regions, slide_id
+
+    def __len__(self):
+        return len(self.df)
+
+class RegionFilepathsDatasetv2(torch.utils.data.Dataset):
+    def __init__(
+        self,
+        df: pd.DataFrame,
+        region_dir: Path,
+        fmt: str,
+    ):
+        self.df = df
+        self.region_dir = region_dir
+        self.format = fmt
+
+    def __getitem__(self, idx: int):
+        row = self.df.loc[idx]
+        slide_id = row.slide_id
+        slide_dir = Path(self.get_slidedir(slide_id))
+        regions = [str(fp) for fp in slide_dir.glob(f"*.{self.format}")]
+        return idx, regions, slide_id
+    
+    def get_slidedir(self, slide_id):
+        for class_dir in os.listdir(self.region_dir):
+            class_path = Path(self.region_dir, class_dir)
+            if slide_id in os.listdir(class_path):        # If it does, then construct the final path and print it
+                return Path(class_path, slide_id)
 
     def __len__(self):
         return len(self.df)
