@@ -144,14 +144,22 @@ class LossFactory:
         loss_options: Optional[DictConfig] = None,
     ):
 
-        if task == "subtyping":
+        if task == "classification":
             if loss == "ce":
                 self.criterion = nn.CrossEntropyLoss()
             elif loss == "mse":
                 self.criterion = nn.MSELoss()
             elif loss == "ordinal":
                 self.criterion = nn.MSELoss()
-
+            elif loss == "focal":
+                self.criterion = torch.hub.load(
+                                'adeelh/pytorch-multi-class-focal-loss',
+                                model='FocalLoss',
+                                alpha=torch.tensor(loss_options.alpha, device="cuda:0"),
+                                gamma=2,
+                                reduction='mean',
+                                force_reload=False
+                            )
         elif task == "survival":
             self.criterion = NLLSurvLoss()
             # self.criterion = NLLSurvLoss(alpha=loss_options.alpha)
