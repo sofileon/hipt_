@@ -85,6 +85,7 @@ def main(cfg: DictConfig):
     elif cfg.extension == "h5":
         dataset = h5fileDataset(cfg.data_dir, transform=transform)
 
+        
     if cfg.training.pct:
         print(f"Pre-training on {cfg.training.pct*100}% of the data")
         nsample = int(cfg.training.pct * len(dataset))

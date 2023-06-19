@@ -29,6 +29,7 @@ from utils import (
     get_params_groups,
     cosine_scheduler,
     get_world_size,
+    resume_from_checkpoint,
     start_from_checkpoint,
     is_main_process,
 )
@@ -47,21 +48,27 @@ def main(cfg: DictConfig):
             print(f"Distributed session successfully initialized")
     else:
         gpu_id = -1
-
     if is_main_process():
-        run_id = datetime.datetime.now().strftime("%Y-%m-%d_%H_%M")
+        print(f"torch.cuda.device_count(): {torch.cuda.device_count()}")
         # set up wandb
         if cfg.wandb.enable:
             key = os.environ.get("WANDB_API_KEY")
             wandb_run = initialize_wandb(cfg, key=key)
             wandb_run.define_metric("epoch", summary="max")
-            run_id = wandb_run.id
+            #run_id = wandb_run.id
 
     fix_random_seeds(cfg.seed)
     cudnn.benchmark = True
 
-    output_dir = Path(cfg.output_dir, cfg.experiment_name, run_id)
-    output_dir.mkdir(parents=True, exist_ok=True)
+    output_dir = Path(cfg.output_dir, cfg.experiment_name)
+    if not cfg.resume and is_main_process():
+        if output_dir.exists():
+            print(
+                f"WARNING: {output_dir} already exists! Deleting its content...")
+            shutil.rmtree(output_dir)
+            output_dir.mkdir(parents=True)
+        else:
+            output_dir.mkdir(parents=True, exist_ok=True)
 
     # preparing data
     if is_main_process():
@@ -221,21 +228,51 @@ def main(cfg: DictConfig):
     if is_main_process():
         print(f"Models built, kicking off training")
 
+    epochs_run = 0
+
+    snapshot_path = Path(output_dir, cfg.resume_from_checkpoint)
+    print(f"snapshot_path: {snapshot_path}")
+    if distributed:
+        if snapshot_path.exists():
+            print("Loading snapshot")
+            loc = f"cuda:{gpu_id}"
+            snapshot = torch.load(snapshot_path, map_location=loc)
+            epochs_run = snapshot["epoch"] #so it starts at the next epoch
+            student.load_state_dict(snapshot["student"])
+            teacher.load_state_dict(snapshot["teacher"])
+            optimizer.load_state_dict(snapshot["optimizer"])
+            dino_loss.load_state_dict(snapshot["dino_loss"])
+            if fp16_scaler is not None:
+                fp16_scaler.load_state_dict(snapshot["fp16_scaler"])
+            print(f"Resuming training from snapshot at Epoch {epochs_run}")
+    elif cfg.resume:
+        ckpt_path = Path(output_dir, cfg.resume_from_checkpoint)
+        epochs_run = resume_from_checkpoint(
+            ckpt_path,
+            student=student,
+            teacher=teacher,
+            optimizer=optimizer,
+            fp16_scaler=fp16_scaler,
+            dino_loss=dino_loss,
+        )
+
     start_time = time.time()
 
     with tqdm.tqdm(
-        range(cfg.training.nepochs),
+        range(epochs_run, cfg.training.nepochs),
         desc=(f"Hierarchical DINO Pre-Training"),
         unit=" epoch",
         ncols=100,
         leave=True,
+        initial=epochs_run,
+        total=cfg.training.nepochs,
         file=sys.stdout,
     ) as t:
 
         for epoch in t:
 
             epoch_start_time = time.time()
-            if cfg.wandb.enable:
+            if cfg.wandb.enable and is_main_process():
                 wandb.log({"epoch": epoch + 1})
 
             if distributed:
@@ -258,11 +295,12 @@ def main(cfg: DictConfig):
                 cfg.training.clip_grad,
                 cfg.training.freeze_last_layer,
                 gpu_id,
+                output_dir,
             )
 
             lr = train_stats["lr"]
             loss = train_stats["loss"]
-            if cfg.wandb.enable:
+            if cfg.wandb.enable and is_main_process():
                 wandb.define_metric("lr", step_metric="epoch")
                 wandb.define_metric("loss", step_metric="epoch")
                 wandb.log({"lr": lr})
@@ -285,8 +323,8 @@ def main(cfg: DictConfig):
                 torch.save(save_dict, save_path)
 
             if (
-                cfg.logging.save_ckpt_every
-                and epoch % cfg.logging.save_ckpt_every == 0
+                cfg.logging.save_snapshot_every
+                and epoch % cfg.logging.save_snapshot_every == 0
                 and is_main_process()
             ):
                 save_path = Path(output_dir, f"checkpoint_{epoch:03}.pth")
