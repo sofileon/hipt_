@@ -208,7 +208,7 @@ class RegionDataAugmentationDINO(object):
         crops = []
         x = x.unfold(0, self.npatch, self.npatch).transpose(
             0, 1
-        )  # [m, 384] -> [npatch, 384, npatch] -> [384, npatch, npatch]
+        )  # [m, 384] -> [npatch, 384, npatch] -> [384, npatch, npatch] -> [C, npatch, npatch]
         crops.append(self.global_transfo1(x))
         crops.append(self.global_transfo2(x))
         for _ in range(self.local_crops_number):
@@ -648,10 +648,10 @@ def train_one_epoch(
     freeze_last_layer,
     gpu_id,
     output_dir,
-    wandb_enabled,
-    epoch_percentage,
+    wandb_enabled: bool = False,
+    epoch_it : int = 0,
 ):
-    start_it=epoch_percentage*len(data_loader)//100  #batch number (relative to the epoch) to start from, (absolute it number is calculated in the for loop)
+    start_it=epoch_it  #batch number (relative to the epoch) to start from, (absolute it number is calculated in the for loop)
     if start_it>0:
         if is_main_process():
             tqdm.tqdm.write(f'Start  at iteration {start_it}/{len(data_loader)*nepochs} of epoch {epoch}/{nepochs}')
@@ -678,8 +678,6 @@ def train_one_epoch(
         for it, (images, _) in enumerate(t, start=start_it):
             # update weight decay and learning rate according to their schedule
             it = (len(data_loader)+start_it) * epoch + it # global training iteration
-            # if it<start_it:
-            #     continue
             for i, param_group in enumerate(optimizer.param_groups):
                 param_group["lr"] = lr_schedule[it]
                 if i == 0:  # only the first group is regularized
@@ -687,7 +685,7 @@ def train_one_epoch(
 
             # move images to gpu
             if gpu_id == -1:
-                images = [im.cuda(non_blocking=True) for im in images]
+                images = [im.cuda(non_blocking=True) for im in images] #images is a list of len 10 where each element is a tensor of shape [batch_size, 3, crop_size, crop_size] (crop_size can be 224 or 96)
             else:
                 device = torch.device(f"cuda:{gpu_id}")
                 images = [im.to(device, non_blocking=True) for im in images]
@@ -695,12 +693,12 @@ def train_one_epoch(
             with torch.cuda.amp.autocast(fp16_scaler is not None):
                 teacher_output = teacher(
                     images[:2]
-                )  # only the 2 global views pass through the teacher
-                student_output = student(images)
+                )  # only the 2 global views pass through the teacher. Output is of size [2,batch_size, 384]
+                student_output = student(images) # output is of size [10,batch_size, 384]
                 loss = dino_loss(student_output, teacher_output, epoch)
 
             if not math.isfinite(loss.item()):
-                tqdm.tqdm.write(
+                print(
                     "Loss is {}, stopping training".format(loss.item())#, force=True
                 )
                 sys.exit(1)
@@ -742,9 +740,25 @@ def train_one_epoch(
             metric_logger.update(loss=loss.item())
             metric_logger.update(lr=optimizer.param_groups[0]["lr"])
             metric_logger.update(wd=optimizer.param_groups[0]["weight_decay"])
-
+            # save the model every 5% of the dataloader
+            if wandb_enabled and it % ((len(data_loader)+start_it)//20) == 0 and it > 0 and is_main_process():
+                percentage_epoch= round((it-((len(data_loader)+start_it) * epoch ))*100/(len(data_loader)+start_it))
+                tqdm.tqdm.write(f'Saving {percentage_epoch}% checkpoint of current epoch')
+                if percentage_epoch == 100:
+                    continue
+                snapshot_epoch_path =  Path(output_dir, f"snapshot_epoch_{epoch:03}_{percentage_epoch}.pth")
+                snapshot = {
+                    "epoch": epoch,
+                    "optimizer": optimizer.state_dict(),
+                    "dino_loss": dino_loss.state_dict(),
+                    "student": student.state_dict(),
+                    "teacher": teacher.state_dict(),
+                }
+                if fp16_scaler is not None:
+                    snapshot["fp16_scaler"] = fp16_scaler.state_dict()
+                torch.save(snapshot, snapshot_epoch_path)
             # save the model every 10% of the dataloader
-            if it % ((len(data_loader)+start_it)//10) == 0 and it > 0 and is_main_process():
+            if wandb_enabled and it % ((len(data_loader)+start_it)//10) == 0 and it > 0 and is_main_process():
                 percentage_epoch= round((it-((len(data_loader)+start_it) * epoch ))*100/(len(data_loader)+start_it))
                 tqdm.tqdm.write(f'Saving {percentage_epoch}% checkpoint of current epoch')
                 if percentage_epoch == 100:
