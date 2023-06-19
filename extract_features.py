@@ -1,4 +1,5 @@
 import os
+import h5py
 import tqdm
 import time
 import wandb
@@ -6,6 +7,7 @@ import torch
 import hydra
 import shutil
 import datetime
+import patchify
 import subprocess
 import pandas as pd
 from PIL import Image
@@ -13,7 +15,7 @@ from pathlib import Path
 from omegaconf import DictConfig
 from torchvision import transforms
 
-from source.dataset import RegionFilepathsDataset
+from source.dataset import RegionFilepathsDataset, RegionFilepathsDatasetv2
 from source.models import GlobalFeatureExtractor, LocalFeatureExtractor
 from source.utils import initialize_wandb, initialize_df, collate_region_filepaths, is_main_process
 
@@ -23,7 +25,7 @@ from source.utils import initialize_wandb, initialize_df, collate_region_filepat
 )
 def main(cfg: DictConfig):
 
-    distributed = torch.cuda.device_count() > 1
+    distributed = torch.cuda.device_count() > 1 and cfg.multi
     if distributed:
         torch.distributed.init_process_group(backend="nccl")
         gpu_id = int(os.environ["LOCAL_RANK"])
@@ -49,9 +51,16 @@ def main(cfg: DictConfig):
         torch.distributed.broadcast_object_list(obj, 0, device=torch.device(f"cuda:{gpu_id}"))
         run_id = obj[0]
 
-    output_dir = Path(cfg.output_dir, cfg.experiment_name, run_id)
+    output_dir = Path(cfg.output_dir, cfg.experiment_name)#, run_id)
     slide_features_dir = Path(output_dir, "slide")
     region_features_dir = Path(output_dir, "region")
+    #check if output dir exists if not create it
+    if not output_dir.exists():
+        output_dir.mkdir(parents=True, exist_ok=True)
+        slide_features_dir.mkdir()
+        if cfg.save_region_features:
+            region_features_dir.mkdir()
+    
     if not cfg.resume and is_main_process():
         if output_dir.exists():
             print(f"{output_dir} already exists! deleting it...")
@@ -87,18 +96,33 @@ def main(cfg: DictConfig):
         raise ValueError(f"cfg.level ({cfg.level}) not supported")
 
     region_dir = Path(cfg.region_dir)
-    slide_ids = sorted([s.name for s in region_dir.iterdir()])
+    if cfg.format == "h5":
+        slide_ids = sorted([s.name for sub in region_dir.iterdir()
+                        for s in sub.iterdir()])
+    else:
+        slide_ids = sorted([s.name for s in region_dir.iterdir()])
     if is_main_process():
         print(f"{len(slide_ids)} slides with extracted patches found")
 
     if cfg.slide_list:
         with open(Path(cfg.slide_list), "r") as f:
             slide_ids = sorted([Path(x.strip()).stem for x in f.readlines()])
+            if cfg.resume:
+                #check the slides from the slide_list that have already been processed
+                processed_slides = [slide.stem for slide in slide_features_dir.iterdir() if slide.stem in slide_ids]
+                slide_ids = [slide for slide in slide_ids if slide not in processed_slides] #keep only the slides that have not been processed
         if is_main_process():
-            print(f"restricting to {len(slide_ids)} slides from slide list .txt file")
+            if not cfg.resume:
+                print(f"restricting to {len(slide_ids)} slides from slide list .txt file")
+            else:
+                print(
+                    f"restricting to {len(slide_ids)}/{len(slide_ids)+len(processed_slides)} slides from slide list .txt file ({len(processed_slides)} already processed)")
 
     df = initialize_df(slide_ids)
-    dataset = RegionFilepathsDataset(df, region_dir, cfg.format)
+    if cfg.format == "h5":
+        dataset = RegionFilepathsDatasetv2(df, region_dir, cfg.format)
+    else:
+        dataset = RegionFilepathsDataset(df, region_dir, cfg.format)
 
     if distributed and is_main_process() and cfg.wandb.enable:
         command_line = [
@@ -177,16 +201,23 @@ def main(cfg: DictConfig):
                     for fp in t2:
 
                         x_y = Path(fp).stem
-                        x, y = int(x_y.split('_')[0]), int(x_y.split('_')[1])
+                        if cfg.format == "h5":
+                            x, y = int(x_y.split('_')[-2]), int(x_y.split('_')[-1])
+                            img = h5py.File(fp, 'r')['imgs'][:].reshape(16, 16, 1, 256, 256, 3)
+                            img = Image.fromarray(patchify.unpatchify(
+                                img, (cfg.region_size, cfg.region_size, 3)))
+                        else:
+                            x, y = int(x_y.split('_')[0]), int(x_y.split('_')[1])
+                            img = Image.open(fp)
                         x_coords.append(x)
                         y_coords.append(y)
-                        img = Image.open(fp)
                         img = transforms.functional.to_tensor(img)  # [3, 4096, 4096]
                         img = img.unsqueeze(0)  # [1, 3, 4096, 4096]
                         img = img.to(device, non_blocking=True)
                         feature = model(img)
                         if cfg.save_region_features:
-                            save_path = Path(region_features_dir, f"{slide_id}_{x}_{y}.pt")
+                            save_path = Path(
+                                region_features_dir, f"{slide_id}_{x}_{y}.pt")
                             torch.save(feature, save_path)
                             region_feature_paths.append(save_path.resolve())
                             region_slide_ids.append(slide_id)
@@ -208,7 +239,8 @@ def main(cfg: DictConfig):
     })
 
     if distributed:
-        slide_features_csv_path = Path(output_dir, f'slide_features_{gpu_id}.csv')
+        slide_features_csv_path = Path(
+            output_dir, f'slide_features_{gpu_id}.csv')
     else:
         slide_features_csv_path = Path(output_dir, f'slide_features.csv')
     slide_features_df.to_csv(slide_features_csv_path, index=False)
@@ -223,7 +255,8 @@ def main(cfg: DictConfig):
             'y': y_coords,
         })
         if distributed:
-            region_features_csv_path = Path(output_dir, f'region_features_{gpu_id}.csv')
+            region_features_csv_path = Path(
+                output_dir, f'region_features_{gpu_id}.csv')
         else:
             region_features_csv_path = Path(output_dir, f'region_features.csv')
         region_features_df.to_csv(region_features_csv_path, index=False)
@@ -240,17 +273,20 @@ def main(cfg: DictConfig):
                 slide_dfs.append(slide_df)
                 os.remove(slide_fp)
                 if cfg.save_region_features:
-                    region_fp = Path(output_dir, f'region_features_{gpu_id}.csv')
+                    region_fp = Path(
+                        output_dir, f'region_features_{gpu_id}.csv')
                     region_df = pd.read_csv(region_fp)
                     region_dfs.append(region_df)
                     os.remove(region_fp)
             slide_features_df = pd.concat(slide_dfs, ignore_index=True)
             slide_features_df = slide_features_df.drop_duplicates()
-            slide_features_df.to_csv(Path(output_dir, f'slide_features.csv'), index=False)
+            slide_features_df.to_csv(
+                Path(output_dir, f'slide_features.csv'), index=False)
             if cfg.save_region_features:
                 region_features_df = pd.concat(region_dfs, ignore_index=True)
                 region_features_df = region_features_df.drop_duplicates()
-                region_features_df.to_csv(Path(output_dir, f'region_features.csv'), index=False)
+                region_features_df.to_csv(
+                    Path(output_dir, f'region_features.csv'), index=False)
 
     if cfg.wandb.enable and is_main_process() and distributed:
         wandb.log({"processed": len(slide_features_df)})
@@ -258,5 +294,5 @@ def main(cfg: DictConfig):
 
 if __name__ == "__main__":
 
-    # python3 -m torch.distributed.run --standalone --nproc_per_node=gpu extract_features_dist.py --config-name 'debug'
+    # python3 -m torch.distributed.run --standalone --nproc_per_node=gpu extract_features_dist.py --config-name 'HIPT_tcga_ckpoint_local'
     main()
