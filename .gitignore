@@ -6,6 +6,8 @@ notebooks/*
 checkpoints/*.pth
 config/pretraining/*.yaml
 *.sh
+*.png
+*.jpeg
 config/**/*.yaml
 # un-related python scripts
 convert_svs_slides_to_tif.py
