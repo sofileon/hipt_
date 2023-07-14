@@ -15,6 +15,7 @@ from source.models import ModelFactory
 from source.components import LossFactory
 from source.dataset import ExtractedFeaturesDataset
 from source.utils import (
+    fix_random_seeds,
     initialize_wandb,
     train,
     tune,
@@ -30,7 +31,7 @@ from source.utils import (
 
 @hydra.main(
     version_base="1.2.0",
-    config_path="../config/training/subtyping",
+    config_path="../config/training/classification",
     config_name="single",
 )
 def main(cfg: DictConfig):
@@ -43,6 +44,7 @@ def main(cfg: DictConfig):
         wandb_run.define_metric("epoch", summary="max")
         run_id = wandb_run.id
 
+    fix_random_seeds(0)
     output_dir = Path(cfg.output_dir, cfg.experiment_name, run_id)
     output_dir.mkdir(parents=True, exist_ok=True)
 
@@ -55,9 +57,9 @@ def main(cfg: DictConfig):
     features_dir = Path(cfg.features_dir)
 
     num_classes = cfg.num_classes
-    criterion = LossFactory(cfg.task, cfg.loss).get_loss()
+    criterion = LossFactory(cfg.task, cfg.loss, cfg.loss_options).get_loss()
 
-    model = ModelFactory(cfg.level, num_classes, cfg.model).get_model()
+    model = ModelFactory(cfg.level, num_classes, cfg.task, cfg.label_mapping, cfg.model).get_model()
     model.relocate()
     print(model)
 
