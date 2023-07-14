@@ -35,7 +35,7 @@ def main(cfg: DictConfig):
         wandb_run.define_metric("epoch", summary="max")
         run_id = wandb_run.id
 
-    output_dir = Path(cfg.output_dir, cfg.experiment_name, run_id)
+    output_dir = Path(cfg.output_dir, cfg.experiment_name)#, run_id)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     result_dir = Path(output_dir, "results", cfg.level)
@@ -45,7 +45,7 @@ def main(cfg: DictConfig):
 
     num_classes = cfg.num_classes
 
-    model = ModelFactory(cfg.level, num_classes, cfg.model).get_model()
+    model = ModelFactory(cfg.level, num_classes, cfg.task, model_options=cfg.model).get_model()
     model.relocate()
     print(model)
 
