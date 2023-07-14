@@ -35,7 +35,7 @@ def main(cfg: DictConfig):
         wandb_run.define_metric("epoch", summary="max")
         run_id = wandb_run.id
 
-    output_dir = Path(cfg.output_dir, cfg.experiment_name)#, run_id)
+    output_dir = Path(cfg.output_dir, cfg.experiment_name, run_id)
     output_dir.mkdir(parents=True, exist_ok=True)
 
     result_dir = Path(output_dir, "results", cfg.level)
