@@ -1,0 +1,46 @@
+experiment_name: 'CRC_kmeans'
+resume: True
+
+# data that will be used for fitting the kmeans
+feature_extraction: False
+patch_files_dir: '/data/pathology/projects/pathology-self-supervision/data/NCT-CRC-HE-100K'
+save_features: True
+output_features_dir: '/data/pathology/projects/pathology-self-supervision/data/NCT-CRC-HE-100K_features'
+model_params:
+  weights256 : '/data/pathology/projects/pathology-self-supervision/checkpoint_hipt/vit256_small_dino.pth'
+  patch_size : 256
+  mini_patch_size : 16
+  embed_dim_patch : 384
+  region_size : 4096
+  embed_dim_region : 192
+
+patch_features_dir: '/data/pathology/projects/pathology-self-supervision/data/NCT-CRC-HE-100K_features'
+labeled_features: True
+features_per_file: 1 
+
+method: 'kmeans' # 'kmeans' or 'mini_batch_kmeans'
+kmeans:
+  n_clusters: 9
+  random_state: 420
+  n_init: 'auto'
+mini_batch_kmeans:
+  n_clusters: 9
+  random_state: 420
+  batch_size: 2560
+  n_init: 'auto'
+
+# data that will be used for predicting kmeans labels and hence sampled (can be the same as the one used for fitting the kmeans)
+feature_files_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/WSI_experiments/4096_HIPT_TCGA_ckpt/TCGA_local_features/region/'
+
+h5_files_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/region_4096_h5/'
+tissue: 'colon'
+n_samples: 100000
+output_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/sampling_patches'
+
+wandb:
+  enable: False
+  project: 'HIPT_data_sampling'
+  username: 'sofialeoncontreras'
+  exp_name: '${experiment_name}'
+  dir: '/data/pathology/projects/pathology-self-supervision/'
+  group:
