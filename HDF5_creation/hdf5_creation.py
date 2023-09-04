@@ -85,14 +85,20 @@ def main(cfg:DictConfig):
         h5_files = [row[0] for row in reader]
         h5_files.remove('h5_files')
     h5_files=[Path(x) for x in h5_files]
-    wsi_path = list(Path(cfg.wsi_files_dir).rglob("*.tif"))
-    tissue_class =f"{cfg.tissue}_{('_').join(Path(cfg.hdf5_files_csv).stem.split('_')[:-2])}"
+    #cambiar esto para que lea un csv con los paths de los wsi
+    with open(Path(cfg.wsi_files), 'r') as f:
+        reader = csv.reader(f)
+        wsi_files = [row[0] for row in reader]
+        wsi_files.remove('slide_path')
+    wsi_path=[Path(x) for x in wsi_files]
+    #wsi_path = list(Path(cfg.wsi_files_dir).rglob("*.tif"))
+    tissue_class =cfg.tissue
     #Check if the csv with processed wsi exists
     processed_list=Path(cfg.processed_wsi_csv)
     if not processed_list.is_file():
         with open(processed_list, 'w') as f:
             writer = csv.writer(f)
-            writer.writerow(['WSI_name','Label','Number_of_regions', 'Number_of_patches'])
+            writer.writerow(['WSI_name','Tissue_class','Number_of_regions', 'Number_of_patches'])
     time_all_class=0
     print(f'Processing {len(h5_files)} WSIs.')
     for index,h5_file in enumerate(h5_files):
@@ -128,5 +134,5 @@ def main(cfg:DictConfig):
     print(f'Total time taken for {tissue_class} is {time_all_class} (hh:mm:ss)')
 
 if __name__ == "__main__":
-    #   python3 HDF5_creation/hdf5_creation.py --config-name 'cancer_lgd_config'
+    #   python3 HDF5_creation/hdf5_creation.py --config-name 'catania_config'
     main()
