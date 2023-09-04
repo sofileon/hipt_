@@ -4,7 +4,8 @@ output_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_co
 experiment_name: '4096_HIPT_TCGA_ckpt'
 resume: True
 
-slide_list:
+slide_list: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/WSI_experiments/slide_list/missing_features_1.csv'
+
 
 region_size: 4096
 patch_size: 256
