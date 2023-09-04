@@ -1,0 +1,33 @@
+region_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/region_4096_h5/'
+
+output_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/WSI_experiments/'
+experiment_name: '4096_HIPT_TCGA_ckpt'
+resume: True
+
+slide_list:
+
+region_size: 4096
+patch_size: 256
+mini_patch_size: 16
+
+format: 'h5'
+level: 'global'
+type: 'pretraining'
+multi: False
+save_region_features: True
+
+
+pretrain_vit_patch: '/data/pathology/projects/pathology-self-supervision/checkpoint_hipt/vit256_small_dino.pth'
+pretrain_vit_region: '/data/pathology/projects/pathology-self-supervision/checkpoint_hipt/vit4k_xs_dino.pth'
+
+wandb:
+  enable: True
+  project: 'HIPT_features'
+  username: 'sofialeoncontreras'
+  exp_name: '${experiment_name}'
+  dir: '/data/pathology/projects/pathology-self-supervision/'
+  group:
+
+hydra:
+  run:
+    dir: /tmp/hydra_output
