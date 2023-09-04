@@ -1,8 +1,9 @@
 region_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/region_4096_h5/'
 
 output_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/WSI_experiments/4096_HIPT_TCGA_ckpt'
-experiment_name: 'TCGA_local_features'
+experiment_name: 'TCGA_local_features2'
 resume: True
+
 
 slide_list: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/WSI_experiments/4096_HIPT_TCGA_ckpt/missing_features.csv'
 
@@ -13,6 +14,7 @@ mini_patch_size: 16
 format: 'h5'
 level: 'local'
 num_workers: 8
+multi: True
 save_region_features: True
 
 pretrain_vit_patch: '/data/pathology/projects/pathology-self-supervision/checkpoint_hipt/vit256_small_dino.pth'
