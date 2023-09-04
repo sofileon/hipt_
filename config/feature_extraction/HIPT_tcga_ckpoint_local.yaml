@@ -2,10 +2,10 @@ region_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_co
 
 output_dir: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/WSI_experiments/4096_HIPT_TCGA_ckpt'
 experiment_name: 'TCGA_local_features2'
-resume: True
+resume: False
 
 
-slide_list: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/WSI_experiments/4096_HIPT_TCGA_ckpt/missing_features.csv'
+slide_list: '/data/pathology/projects/pathology-self-supervision/data/examode_colon/WSI_experiments/slide_list/missing_features_1.csv'
 
 region_size: 4096
 patch_size: 256
