@@ -57,7 +57,7 @@ def main(cfg: DictConfig):
     #check if output dir exists if not create it
     if not output_dir.exists():
         output_dir.mkdir(parents=True, exist_ok=True)
-        slide_features_dir.mkdir()
+        slide_features_dir.mkdir(parents=True, exist_ok=True)
         if cfg.save_region_features:
             region_features_dir.mkdir()
     
