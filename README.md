@@ -19,6 +19,7 @@ Re-implementation of original [HIPT](https://github.com/mahmoodlab/HIPT) code.
 You need to have extracted square regions from each WSI you intend to train on.<br>
 To do so, you can take a look at [HS2P](https://github.com/clemsgrs/hs2p), which segments tissue and extract relevant patches at a given pixel spacing.
 
+
 Download HIPT pre-trained weights via the following commands:
 
 <details>
@@ -33,6 +34,68 @@ gdown 1Qm-_XrTMYhu9Hl-4FClaOMuroyWlOAxw
 gdown 1A2eHTT0dedHgdCvy6t3d9HwluF8p5yjz
 ```
 </details>
+
+## Using HDF5 files
+
+If you want to use HDF5 files,run HS2P to extract the coordinates of the 4096x4096 regions without saving the images to disk (setting in the config file `save_patches_to_disk` to False). HS2P outputs one .h5 file per slide containing the coordinates of every region found with the slide under the `/patches/` folder. After finishing to run HS2P in all your dataset, follow this steps:
+
+1. Compile the paths to the .h5 files in a csv.
+
+```
+file_path=Path(<HS2P_outputdir>, '/patches/<region_size>/<format>/').rglob('*.h5')
+h5_files=[x for x in file_path if x.is_file()]
+with open(Path(any/path/region_coordinates.csv), 'w') as f:
+    writer = csv.writer(f)
+    writer.writerow(['h5_files'])
+    for h5_file in h5_files:
+        writer.writerow([h5_file])
+```
+2. Create a CSV file containing paths to the slides used in HS2P:
+
+```
+slide_path
+path/to/slide_1.tif
+path/to/slide_2.tif
+...
+```
+
+3. Create a configuration file under `config/hdf5/` (see examples contained in this repository):
+```
+hdf5_files_csv:'/path/to/the/csv/with/all_h5_paths/region_coordinates.csv'
+wsi_files:'/path/to/the/csv/with/wsi_paths.csv' 
+output_dir:'any/path/'
+processed_wsi_csv:'any/path/processed_wsi2region_h5.csv'
+tissue: <tissue_type_you_are_working_with>
+region_2_patches:
+  patch_size: 256 # patch size for ViT Patch in HIPT
+```
+4. Run the following command to kick off region extraction into HDF5 files:
+
+```
+python3 HDF5_creation/hdf5_creation.py --config-name <config_file>
+```
+
+<details>
+<summary>
+HDF5 region extraction output
+</summary>
+
+```
+output_dir/
+├── tissue/
+│     ├── slide_id_0/
+│     │     ├── slide_id_0_x0_y0.h5
+│     │     ├── slide_id_0_x1_y0.h5
+│     │     └── ...
+│     ├── slide_id_1/
+│     │     ├── slide_id_1_x0_y0.h5
+│     │     ├── slide_id_1_x1_y0.h5
+│     │     └── ...
+│     └── ...
+```
+</details>
+
+Each .h5 file will contain one region unrolled into 256 patches of size [256x256] and its coordinates.
 
 ## Feature Extraction
 
@@ -159,6 +222,10 @@ Then, run the following command to kick off model training on multiple folds:
 - survival: `python3 train/survival_multi.py --config-name <survival_single_fold_config_filename>`
 
 ## Hierarchical Pretraining
+
+### Patch sampling
+If you
+
 
 <details>
 <summary>
